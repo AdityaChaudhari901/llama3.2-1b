@@ -73,14 +73,14 @@ async def ask(payload: AskIn):
         data = r.json()
         return {"answer": data.get("response", ""), "model": MODEL}
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
 # Serve React frontend static files from dist/ if it exists
 # (must be mounted AFTER all API routes so they take priority)
-import os
 from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+
 _dist = Path(__file__).parent / "dist"
 if _dist.exists():
-    from fastapi.staticfiles import StaticFiles
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
