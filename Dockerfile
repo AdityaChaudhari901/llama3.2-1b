@@ -45,6 +45,12 @@ ENV PORT=8080 \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 
+# Pre-bake the model into the image during the build phase to eliminate 
+# runtime OOM kills and slow startup times
+RUN nohup bash -c "ollama serve &" && \
+    sleep 5 && \
+    ollama pull $MODEL
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \

@@ -6,11 +6,7 @@ echo "Starting Ollama server..."
 OLLAMA_HOST=127.0.0.1:11434 ollama serve &
 OLLAMA_PID=$!
 
-echo "Waiting for Ollama to be ready..."
-sleep 5
 
-echo "Pulling model $MODEL..."
-ollama pull $MODEL &
 
 echo "Starting FastAPI app on port 8080..."
 # Start FastAPI in the foreground
