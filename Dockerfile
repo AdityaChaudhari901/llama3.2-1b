@@ -23,6 +23,10 @@ RUN npm run build
 # ================================================================
 FROM ollama/ollama:latest
 
+# Fix 1: Suppress tzdata interactive prompt during apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
 # Install Python 3 & pip
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 python3-pip && \
@@ -31,10 +35,11 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Install Python dependencies
-COPY Backend/requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Fix 2: --break-system-packages bypasses PEP 668 "externally managed" block
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Copy backend application
+COPY Backend/requirements.txt .
 COPY Backend/app.py .
 
 # Copy built React app into dist/ so FastAPI can serve it
