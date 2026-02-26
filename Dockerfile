@@ -12,40 +12,49 @@ ENV VITE_API_URL=""
 RUN npm run build
 
 # ============================================================
-# Stage 2: Build Backend Python Dependencies
+# Stage 2: Build Python Dependencies
+# Use ubuntu:22.04 to match the ollama/ollama base OS so
+# compiled packages are binary-compatible.
 # ============================================================
-FROM python:3.11-slim AS backend-builder
-WORKDIR /app
+FROM ubuntu:22.04 AS backend-builder
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
         gcc \
         libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Backend/requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# ============================================================
-# Stage 3: Runtime Image
-# ============================================================
-FROM python:3.11-slim
 WORKDIR /app
+COPY Backend/requirements.txt .
 
-# Install curl + zstd (required by ollama installer) + ca-certificates
+# Install into /install prefix — no PEP 668, no system pip conflict
+RUN pip3 install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ============================================================
+# Stage 3: Runtime
+# ollama/ollama:latest (Ubuntu 22.04) already contains the
+# ollama binary — NO curl/install.sh needed at all.
+# This eliminates the Kaniko OOM snapshot spike entirely.
+# ============================================================
+FROM ollama/ollama:latest
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Only need python3 — no pip required in runtime stage
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        zstd \
-        ca-certificates \
-    && curl -fsSL https://ollama.com/install.sh | sh \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python packages from backend builder (no PEP 668 issues)
+WORKDIR /app
+
+# Copy Python packages from builder (binary-compatible: both Ubuntu 22.04)
 COPY --from=backend-builder /install /usr/local
 
-# Application code (Backend)
+# Application code
 COPY Backend/app.py .
 
-# Frontend static files served by FastAPI
+# Built React frontend served by FastAPI as static files
 COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment
@@ -56,8 +65,7 @@ ENV PORT=8080 \
 
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
 CMD ["python3", "app.py"]
