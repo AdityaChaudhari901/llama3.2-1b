@@ -3,6 +3,7 @@ version: "1"
 services:
   app:
     name: ollama-ai-assistant
+    handler: docker               # force Docker build — skip language auto-detection
     dockerfile: Dockerfile        # root-level single Dockerfile
     port: 8080
     resources:
@@ -16,4 +17,4 @@ services:
       path: /health
       interval: 30
       timeout: 15
-      retries: 5                 # extra retries for model pull on cold start
+      retries: 5
