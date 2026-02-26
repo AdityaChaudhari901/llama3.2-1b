@@ -31,9 +31,11 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install curl + Ollama binary
+# Install curl + zstd (required by ollama installer) + ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
+        zstd \
+        ca-certificates \
     && curl -fsSL https://ollama.com/install.sh | sh \
     && rm -rf /var/lib/apt/lists/*
 
