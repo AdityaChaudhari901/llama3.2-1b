@@ -50,7 +50,11 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
-# Override the default ollama ENTRYPOINT so python3 runs directly
+# Startup script
+COPY start.sh .
+RUN chmod +x start.sh
+
+# Override the default ollama ENTRYPOINT so our script runs directly
 ENTRYPOINT []
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["./start.sh"]
