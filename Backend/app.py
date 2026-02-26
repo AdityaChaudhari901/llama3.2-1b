@@ -1,4 +1,4 @@
-import os, time, subprocess
+import os, time, threading, subprocess
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,24 +15,27 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class GenerateIn(BaseModel):
-    prompt: str
-    temperature: float | None = 0.7
+# Track model readiness (set to True after pull completes)
+_model_ready = False
 
-class AskIn(BaseModel):
-    question: str
-    temperature: float | None = 0.7
+def _start_ollama():
+    """Run in a background thread so uvicorn binds immediately."""
+    global _model_ready
 
-@app.on_event("startup")
-def startup():
-    subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 1. Start ollama serve
+    subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
-    # wait for server
-    deadline = time.time() + 60
+    # 2. Wait up to 90s for ollama to be reachable
+    deadline = time.time() + 90
     while time.time() < deadline:
         try:
             r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=2.0)
@@ -42,21 +45,53 @@ def startup():
             pass
         time.sleep(1)
 
-    # pull model on boot
+    # 3. Pull the model
     subprocess.run(["ollama", "pull", MODEL], check=False)
+    _model_ready = True
+    print(f"[startup] Model {MODEL} ready.", flush=True)
+
+
+class GenerateIn(BaseModel):
+    prompt: str
+    temperature: float | None = 0.7
+
+class AskIn(BaseModel):
+    question: str
+    temperature: float | None = 0.7
+
+
+@app.on_event("startup")
+def startup():
+    """Fire-and-forget: start ollama in a background thread."""
+    t = threading.Thread(target=_start_ollama, daemon=True)
+    t.start()
+
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model": MODEL}
+    """Always returns 200 — used by Boltic's liveness probe."""
+    return {"ok": True, "model": MODEL, "model_ready": _model_ready}
+
+
+@app.get("/ready")
+def ready():
+    """Returns model load status. Poll this to know when you can chat."""
+    return {"ready": _model_ready, "model": MODEL}
+
 
 @app.post("/generate")
 async def generate(payload: GenerateIn):
-    body = {"model": MODEL, "prompt": payload.prompt, "stream": False,
-            "options": {"temperature": payload.temperature}}
+    body = {
+        "model": MODEL,
+        "prompt": payload.prompt,
+        "stream": False,
+        "options": {"temperature": payload.temperature},
+    }
     async with httpx.AsyncClient(timeout=180.0) as client:
         r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
         r.raise_for_status()
         return r.json()
+
 
 @app.post("/ask")
 async def ask(payload: AskIn):
@@ -73,8 +108,9 @@ async def ask(payload: AskIn):
         data = r.json()
         return {"answer": data.get("response", ""), "model": MODEL}
 
+
 # Serve React frontend static files from dist/ if it exists
-# (must be mounted AFTER all API routes so they take priority)
+# Must be mounted AFTER all API routes so they take priority
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
