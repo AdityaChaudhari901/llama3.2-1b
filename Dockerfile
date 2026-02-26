@@ -53,4 +53,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
 # Override the default ollama ENTRYPOINT so python3 runs directly
 ENTRYPOINT []
 
-CMD ["python3", "app.py"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
