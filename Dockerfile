@@ -12,44 +12,26 @@ ENV VITE_API_URL=""
 RUN npm run build
 
 # ============================================================
-# Stage 2: Build Python Dependencies
-# Use ubuntu:22.04 to match the ollama/ollama base OS so
-# compiled packages are binary-compatible.
-# ============================================================
-FROM ubuntu:22.04 AS backend-builder
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 \
-        python3-pip \
-        gcc \
-        libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY Backend/requirements.txt .
-
-# Install into /install prefix — no PEP 668, no system pip conflict
-RUN pip3 install --no-cache-dir --prefix=/install -r requirements.txt
-
-# ============================================================
-# Stage 3: Runtime
-# ollama/ollama:latest (Ubuntu 22.04) already contains the
-# ollama binary — NO curl/install.sh needed at all.
-# This eliminates the Kaniko OOM snapshot spike entirely.
+# Stage 2: Runtime
+# ollama/ollama:latest (Ubuntu 22.04) already has the ollama
+# binary — no curl/install.sh needed.
 # ============================================================
 FROM ollama/ollama:latest
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Only need python3 — no pip required in runtime stage
+# Install python3, pip; use --break-system-packages to bypass
+# PEP 668 (Ubuntu marks its Python as "externally managed")
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy Python packages from builder (binary-compatible: both Ubuntu 22.04)
-COPY --from=backend-builder /install /usr/local
+# Copy & install Python deps directly — packages land in
+# Ubuntu's dist-packages (not site-packages) so imports work
+COPY Backend/requirements.txt .
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Application code
 COPY Backend/app.py .
@@ -68,7 +50,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
-# Override the default ollama entrypoint
+# Override the default ollama ENTRYPOINT so python3 runs directly
 ENTRYPOINT []
 
 CMD ["python3", "app.py"]
