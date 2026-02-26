@@ -22,7 +22,7 @@ environment:
   - name: MODEL
     value: "llama3.2:1b"
   - name: OLLAMA_HOST
-    value: "0.0.0.0:11434"
+    value: "127.0.0.1:11434"
   - name: PYTHONUNBUFFERED
     value: "1"
   - name: OLLAMA_FLASH_ATTENTION
@@ -32,9 +32,3 @@ environment:
   - name: GOMEMLIMIT
     value: "4500MiB"
 
-health:
-  path: /health
-  initialDelaySeconds: 60      # extra time for ollama serve + model pull on cold start
-  periodSeconds: 30
-  timeoutSeconds: 10
-  failureThreshold: 5
