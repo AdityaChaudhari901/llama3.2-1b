@@ -1,26 +1,34 @@
-# Application name
-app: ollama-ai-assistant
+version: "1"
 
-# Deployment region
-region: asia-south1
+service:
+  name: ollama-ai-assistant
+  description: "Ollama llama3.2:1b AI Assistant — React frontend + FastAPI backend"
 
-# Build settings — use our Dockerfile (skips Python auto-detection)
 build:
+  context: .
   dockerfile: Dockerfile
 
-# Exposed port
-http:
+deploy:
   port: 8080
+  minInstances: 1
+  maxInstances: 2
+  resources:
+    cpu: "2"
+    memory: "4Gi"
 
-# Environment variables
-env:
-  PORT: "8080"
-  MODEL: "llama3.2:1b"
-  OLLAMA_HOST: "0.0.0.0:11434"
+environment:
+  - name: PORT
+    value: "8080"
+  - name: MODEL
+    value: "llama3.2:1b"
+  - name: OLLAMA_HOST
+    value: "0.0.0.0:11434"
+  - name: PYTHONUNBUFFERED
+    value: "1"
 
-# Resource configuration
-resources:
-  memory: "4096"       # MB — Ollama + llama3.2:1b needs ~3-4 GB
-  max_memory: "4096"
-  cpus: 2
-  cpu_kind: performance
+health:
+  path: /health
+  initialDelaySeconds: 60      # extra time for ollama serve + model pull on cold start
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 5
