@@ -170,12 +170,26 @@ async def ask(payload: AskIn):
         raise HTTPException(status_code=500, detail=f"Model service error: {str(e)}")
 
 # Serve React frontend static files from dist/
+# IMPORTANT: Mount static files at the end so API routes take precedence
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 _dist = Path(__file__).parent / "dist"
 if _dist.exists():
-    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
+    # Mount static assets directory
+    app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
+    
+    # Mount root level static files (logo.png, favicon, etc)
+    @app.get("/{filename}", include_in_schema=False)
+    async def serve_static_files(filename: str):
+        """Serve static files from dist root (logo.png, etc)"""
+        file_path = _dist / filename
+        # Only serve if it's an actual file (not a directory or non-existent)
+        if file_path.is_file() and file_path.name != "index.html":
+            return FileResponse(file_path)
+        # Otherwise serve index.html for SPA routing
+        return FileResponse(_dist / "index.html")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
