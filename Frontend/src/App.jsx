@@ -174,7 +174,7 @@ export default function App() {
 
             if (!res.ok) {
                 const error = await res.json().catch(() => ({}))
-                throw new Error(error.detail || `Server error ${res.status}`)
+                throw new Error(error.error || error.detail || `Server error ${res.status}`)
             }
             const data = await res.json()
 
@@ -185,14 +185,12 @@ export default function App() {
             })
         } catch (err) {
             if (err.name === 'AbortError') return
-            const errorMsg = err.message.includes('detail') 
-                ? err.message 
-                : '⚠️ Could not reach the server. Check the backend is running.'
+            const errorMsg = err.message || '⚠️ Could not reach the server. Check the backend is running.'
             setMessages(prev => {
                 const next = [...prev]
                 next[next.length - 1] = {
                     role: 'assistant',
-                    content: errorMsg,
+                    content: `⚠️ ${errorMsg}`,
                     id: Date.now() + 3,
                 }
                 return next

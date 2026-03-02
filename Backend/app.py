@@ -1,9 +1,11 @@
 import os
 import httpx
 import re
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, field_validator, ValidationError
 import uvicorn
 
 PORT = int(os.getenv("PORT", "8080"))
@@ -55,6 +57,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Convert Pydantic validation errors to user-friendly messages"""
+    errors = exc.errors()
+    if errors:
+        # Get the first error message (usually the most relevant)
+        first_error = errors[0]
+        msg = first_error.get("msg", "Validation error")
+        
+        # Check if it's one of our safety messages
+        if "safety guidelines" in msg or "injection" in msg.lower():
+            return JSONResponse(
+                status_code=400,
+                content={"error": msg}
+            )
+    
+    return JSONResponse(
+        status_code=422,
+        content={"error": "Invalid input", "details": errors}
+    )
 
 class GenerateIn(BaseModel):
     prompt: str
