@@ -168,7 +168,7 @@ async def generate(payload: GenerateIn):
 async def ask(payload: AskIn):
     # Apply personality to the prompt
     personality = payload.personality or SYSTEM_PERSONALITY
-    enhanced_prompt = f"{personality}\n\nUser: {payload.question}\n\nAssistant:"
+    enhanced_prompt = f"{personality}\n\nQuestion: {payload.question}\n\nAnswer:"
     
     body = {
         "model": MODEL,
@@ -183,6 +183,13 @@ async def ask(payload: AskIn):
             r.raise_for_status()
             data = r.json()
             answer = data.get("response", "").strip()
+            
+            # Clean up the response - remove any continuation of fake dialogue
+            # Stop at first occurrence of "User:", "Question:", or double newline followed by dialogue
+            stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:"]
+            for marker in stop_markers:
+                if marker in answer:
+                    answer = answer.split(marker)[0].strip()
             
             # Basic output filtering (remove potential harmful content markers)
             if not answer:
