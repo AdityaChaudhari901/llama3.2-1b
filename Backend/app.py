@@ -180,6 +180,12 @@ if _dist.exists():
     # Mount static assets directory
     app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
     
+    # Serve index.html for root path
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        """Serve the React app at root"""
+        return FileResponse(_dist / "index.html")
+    
     # Mount root level static files (logo.png, favicon, etc)
     @app.get("/{filename}", include_in_schema=False)
     async def serve_static_files(filename: str):
