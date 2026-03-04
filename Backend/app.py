@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.getenv("MODEL", "llama3.2:1b")
+MODEL = os.getenv("MODEL", "tinyllama:1.1b")
 
 # Guardrails Configuration
 MAX_INPUT_LENGTH = 2000
