@@ -11,13 +11,21 @@ echo "=========================================="
 echo "Starting Ollama server..."
 OLLAMA_HOST=127.0.0.1:11434 ollama serve &
 
-# Detached subshell to pull the model asynchronously so uvicorn binds instantly
-(
-  echo "Waiting for Ollama to be ready..."
-  sleep 5
-  echo "Pulling model $MODEL in the background..."
-  ollama pull $MODEL
-) &
+# Wait for Ollama to be ready before proceeding
+echo "Waiting for Ollama server to start..."
+for i in {1..30}; do
+  if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    echo "✅ Ollama server is ready!"
+    break
+  fi
+  echo "Waiting for Ollama... ($i/30)"
+  sleep 2
+done
+
+# Pull the model and wait for it to complete
+echo "Pulling model $MODEL..."
+ollama pull $MODEL
+echo "✅ Model $MODEL is ready!"
 
 echo "Starting FastAPI app on port 8080..."
 echo "Environment: PORT=$PORT, MODEL=$MODEL"
