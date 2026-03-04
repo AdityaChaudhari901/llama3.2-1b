@@ -314,6 +314,20 @@ async def generate(payload: GenerateIn):
 @app.post("/ask")
 async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
+    
+    personality = payload.personality or SYSTEM_PERSONALITY
+    full_prompt = f"{personality}\n\nQuestion: {payload.question}\n\nAnswer:"
+    
+    body = {
+        "model": MODEL,
+        "prompt": full_prompt,
+        "stream": False,
+        "options": {
+            "temperature": payload.temperature,
+            "num_predict": MAX_OUTPUT_TOKENS,
+        },
+    }
+    
     # Retry logic for Ollama startup race conditions
     max_retries = 3
     retry_delay = 2
@@ -356,23 +370,7 @@ async def ask(payload: AskIn):
                 logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.
-                    answer = answer.split(marker)[0].strip()
-            
-            # CRITICAL: Validate output before returning
-            is_safe, validated_answer, violation_category = validate_output(answer)
-            
-            if not is_safe:
-                logger.error(f"Blocked unsafe output in /ask - Category: {violation_category}")
-                answer = validated_answer
-            
-            if not answer:
-                answer = "I apologize, but I couldn't generate a proper response."
-            
-            return {"answer": answer, "model": MODEL}
-    except httpx.HTTPError as e:
-        logger.error(f"Model service error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Model service error: {str(e)}")
+            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.")
 
 # Serve React frontend static files from dist/
 # IMPORTANT: Mount static files at the end so API routes take precedence

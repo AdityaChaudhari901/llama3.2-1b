@@ -11,21 +11,25 @@ echo "=========================================="
 echo "Starting Ollama server..."
 OLLAMA_HOST=127.0.0.1:11434 ollama serve &
 
-# Wait for Ollama to be ready before proceeding
+# Wait for Ollama to be ready (reduced from 30 to 15 iterations)
 echo "Waiting for Ollama server to start..."
-for i in {1..30}; do
+for i in {1..15}; do
   if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     echo "✅ Ollama server is ready!"
     break
   fi
-  echo "Waiting for Ollama... ($i/30)"
+  echo "Waiting for Ollama... ($i/15)"
   sleep 2
 done
 
-# Pull the model and wait for it to complete
-echo "Pulling model $MODEL..."
-ollama pull $MODEL
-echo "✅ Model $MODEL is ready!"
+# Model is already pulled at build time, just verify it exists
+echo "Verifying model $MODEL..."
+if ollama list | grep -q "$MODEL"; then
+  echo "✅ Model $MODEL is ready!"
+else
+  echo "⚠️  Model not found, pulling now..."
+  ollama pull $MODEL
+fi
 
 echo "Starting FastAPI app on port 8080..."
 echo "Environment: PORT=$PORT, MODEL=$MODEL"
