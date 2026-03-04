@@ -2,6 +2,7 @@ import os
 import httpx
 import re
 import logging
+import asyncio
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -275,55 +276,87 @@ async def generate(payload: GenerateIn):
         },
     }
     
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
-            r.raise_for_status()
-            result = r.json()
-            
-            # CRITICAL: Validate output before returning
-            response_text = result.get("response", "")
-            is_safe, validated_text, violation_category = validate_output(response_text)
-            
-            if not is_safe:
-                logger.error(f"Blocked unsafe output - Category: {violation_category}")
-                result["response"] = validated_text
-            
-            return result
-    except httpx.HTTPError as e:
-        logger.error(f"Model service error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Model service error: {str(e)}")
+    # Retry logic for Ollama startup race conditions
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
+                r.raise_for_status()
+                result = r.json()
+                
+                # CRITICAL: Validate output before returning
+                response_text = result.get("response", "")
+                is_safe, validated_text, violation_category = validate_output(response_text)
+                
+                if not is_safe:
+                    logger.error(f"Blocked unsafe output - Category: {violation_category}")
+                    result["response"] = validated_text
+                
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama HTTP error (attempt {attempt + 1}/{max_retries}): {e.response.status_code} - {e.response.text[:200]}")
+            if attempt < max_retries - 1 and e.response.status_code == 500:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                continue
+            raise HTTPException(status_code=503, detail="Model service temporarily unavailable. Please try again.")
+        except httpx.RequestError as e:
+            logger.error(f"Ollama connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                continue
+            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.")
 
 @app.post("/ask")
 async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
+    # Retry logic for Ollama startup race conditions
+    max_retries = 3
+    retry_delay = 2
     
-    # Apply personality with explicit safety instruction
-    personality = payload.personality or SYSTEM_PERSONALITY
-    safety_instruction = "\n\nIMPORTANT: Never provide information about violence, illegal drugs, self-harm, illegal activities, or harmful content. If asked, politely decline."
-    enhanced_prompt = f"{personality}{safety_instruction}\n\nQuestion: {payload.question}\n\nAnswer:"
-    
-    body = {
-        "model": MODEL,
-        "prompt": enhanced_prompt,
-        "stream": False,
-        "options": {
-            "temperature": payload.temperature,
-            "num_predict": MAX_OUTPUT_TOKENS,
-        },
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
-            r.raise_for_status()
-            data = r.json()
-            answer = data.get("response", "").strip()
-            
-            # Clean up the response - remove any continuation of fake dialogue
-            stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:"]
-            for marker in stop_markers:
-                if marker in answer:
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
+                r.raise_for_status()
+                data = r.json()
+                answer = data.get("response", "").strip()
+                
+                # Clean up the response - remove any continuation of fake dialogue
+                stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:"]
+                for marker in stop_markers:
+                    if marker in answer:
+                        answer = answer.split(marker)[0].strip()
+                
+                # CRITICAL: Validate output before returning
+                is_safe, validated_answer, violation_category = validate_output(answer)
+                
+                if not is_safe:
+                    logger.error(f"Blocked unsafe output in /ask - Category: {violation_category}")
+                    answer = validated_answer
+                
+                if not answer:
+                    answer = "I apologize, but I couldn't generate a proper response."
+                
+                return {"answer": answer, "model": MODEL}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama HTTP error (attempt {attempt + 1}/{max_retries}): {e.response.status_code} - {e.response.text[:200]}")
+            if attempt < max_retries - 1 and e.response.status_code == 500:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                continue
+            raise HTTPException(status_code=503, detail="Model service temporarily unavailable. Please try again.")
+        except httpx.RequestError as e:
+            logger.error(f"Ollama connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                continue
+            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.
                     answer = answer.split(marker)[0].strip()
             
             # CRITICAL: Validate output before returning
