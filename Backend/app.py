@@ -24,7 +24,6 @@ MODEL = os.getenv("MODEL", "tinyllama:1.1b")
 
 # Guardrails Configuration
 MAX_INPUT_LENGTH = 2000
-MAX_OUTPUT_TOKENS = 500
 
 # Prompt injection patterns
 INJECTION_PATTERNS = [
@@ -124,7 +123,7 @@ REFUSAL_TEMPLATES = {
     "self_harm": (
         "I’m really sorry that you’re feeling this way. I can’t help with "
         "anything involving self-harm. You don’t have to handle this alone — "
-        "if you’re in the U.S., you can call or text 988 for immediate support. "
+        "if you’re in the India., you can call or text 988 for immediate support. "
         "If you’re elsewhere, I can help find a local resource."
     ),
 
@@ -157,16 +156,10 @@ REFUSAL_TEMPLATES = {
     ),
 }
 
-# AI Personality
+# AI Personality - Simplified for TinyLlama
 SYSTEM_PERSONALITY = os.getenv(
     "AI_PERSONALITY",
-    "You are a professional, helpful, and reliable AI assistant. "
-    "Provide clear, accurate, and well-structured responses. "
-    "Be concise by default, but expand when the situation requires depth. "
-    "Maintain a respectful, calm, and solution-oriented tone. "
-    "If information is uncertain or unavailable, state that clearly. "
-    "Do not fabricate facts. "
-    "Prioritize user safety and ethical guidance at all times."
+    "You are a helpful AI. Give brief, clear answers."
 )
 
 app = FastAPI()
@@ -188,10 +181,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         first_error = errors[0]
         msg = first_error.get("msg", "Validation error")
         
-        # Always return just the error message (don't include details that might not serialize)
+        # Clean up the message - remove "Value error, " prefix if present
+        msg_str = str(msg)
+        if msg_str.startswith("Value error, "):
+            msg_str = msg_str.replace("Value error, ", "", 1)
+        
         return JSONResponse(
             status_code=400,
-            content={"error": str(msg)}
+            content={"error": msg_str}
         )
     
     return JSONResponse(
@@ -316,7 +313,7 @@ async def generate(payload: GenerateIn):
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": MAX_OUTPUT_TOKENS,
+            "num_predict": 150,  # Concise responses
         },
     }
     
@@ -360,7 +357,7 @@ async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
     
     personality = payload.personality or SYSTEM_PERSONALITY
-    full_prompt = f"{personality}\n\nQuestion: {payload.question}\n\nAnswer:"
+    full_prompt = f"{personality} {payload.question}"
     
     body = {
         "model": MODEL,
@@ -368,7 +365,8 @@ async def ask(payload: AskIn):
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": MAX_OUTPUT_TOKENS,
+            "num_predict": 150,  # Reduced for concise responses
+            "stop": ["\n\n", "Question:", "User:", "Asker:"],  # Stop rambling
         },
     }
     
@@ -385,10 +383,20 @@ async def ask(payload: AskIn):
                 answer = data.get("response", "").strip()
                 
                 # Clean up the response - remove any continuation of fake dialogue
-                stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:"]
+                stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
                 for marker in stop_markers:
                     if marker in answer:
                         answer = answer.split(marker)[0].strip()
+                
+                # Remove leading AI:/Asker:/Assistant: prefixes (case insensitive)
+                while True:
+                    cleaned = answer
+                    for prefix in ["AI:", "Asker:", "Assistant:", "Answer:", "Response:"]:
+                        if answer.lower().startswith(prefix.lower()):
+                            answer = answer[len(prefix):].strip()
+                            break
+                    if cleaned == answer:  # No change, we're done
+                        break
                 
                 # CRITICAL: Validate output before returning
                 is_safe, validated_answer, violation_category = validate_output(answer)

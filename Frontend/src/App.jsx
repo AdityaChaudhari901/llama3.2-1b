@@ -11,37 +11,6 @@ const PlusIcon = () => (
     </svg>
 )
 
-const AttachIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-    </svg>
-)
-
-const BrowseIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="11" cy="11" r="8" />
-        <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-)
-
-const MicIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-        <line x1="12" y1="19" x2="12" y2="23" />
-        <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-)
-
-const EmojiIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M8 13s1.5 2 4 2 4-2 4-2" />
-        <line x1="9" y1="9" x2="9.01" y2="9" />
-        <line x1="15" y1="9" x2="15.01" y2="9" />
-    </svg>
-)
-
 const SendIcon = () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <line x1="22" y1="2" x2="11" y2="13" />
@@ -224,12 +193,16 @@ Prioritize efficiency, accuracy, and decision-support.
             })
         } catch (err) {
             if (err.name === 'AbortError') return
-            const errorMsg = err.message || '⚠️ Could not reach the server. Check the backend is running.'
+            let errorMsg = err.message || 'Could not reach the server. Check the backend is running.'
+            // Don't add ⚠️ if message already has emoji or starts with one
+            if (!errorMsg.match(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}⚠️❌]/u)) {
+                errorMsg = `⚠️ ${errorMsg}`
+            }
             setMessages(prev => {
                 const next = [...prev]
                 next[next.length - 1] = {
                     role: 'assistant',
-                    content: `⚠️ ${errorMsg}`,
+                    content: errorMsg,
                     id: Date.now() + 3,
                 }
                 return next
