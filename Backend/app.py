@@ -1,6 +1,8 @@
 import os
 import httpx
 import re
+import logging
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,12 +10,20 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator, ValidationError
 import uvicorn
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL = os.getenv("MODEL", "llama3.2:1b")
 
 # Guardrails Configuration
 MAX_INPUT_LENGTH = 2000
+MAX_OUTPUT_TOKENS = 500
 
 # Prompt injection patterns
 INJECTION_PATTERNS = [
@@ -24,21 +34,87 @@ INJECTION_PATTERNS = [
     r"new\s+instructions:",
     r"forget\s+(everything|all|your)",
     r"act\s+as\s+if",
+    r"override\s+(your|the)\s+(instructions|rules|system)",
+    r"repeat\s+(after|the|your)\s+me",
+    r"system\s*:\s*",
+    r"###\s*instruction",
+    r"assistant\s*:\s*(?:ignore|disregard)",
+    r"DAN\s+mode",
+    r"developer\s+mode",
+    r"jailbreak",
+    r"sudo\s+mode",
 ]
 
-# Harmful content patterns
-HARMFUL_PATTERNS = [
-    r"\b(bomb|explosive|detonate|c4|dynamite|grenade)\b",
-    r"\b(weapon|gun|firearm|ammunition|rifle)\b",
-    r"\b(suicide|self[- ]?harm|kill\s+(myself|yourself))\b",
-    r"\b(hack|exploit|vulnerability|breach|backdoor)\s+(into|system|network)",
-    r"\b(steal|robbery|burglary|breaking\s+in)\b",
-    r"\b(drug|cocaine|heroin|meth|mdma)\s+(make|manufacture|produce|cook)",
-    r"\b(poison|toxin|venom)\s+(make|create|produce)",
-    r"how\s+to\s+(kill|murder|assassinate)",
-    r"\b(child|minor|underage).{0,50}(sexual|explicit|porn)",
-    r"\b(terrorism|terrorist\s+attack)\b",
+# Violence & Weapons patterns
+VIOLENCE_PATTERNS = [
+    r"\b(bomb|explosive|detonate|c4|dynamite|grenade|ied|pipe\s+bomb)\b",
+    r"\b(weapon|gun|firearm|ammunition|rifle|pistol|shotgun)\b",
+    r"\b(kill|murder|assassinate|execute)\s+(someone|people|person|him|her)",
+    r"how\s+to\s+(kill|murder|assassinate|harm)",
+    r"\b(terrorism|terrorist\s+attack|mass\s+shooting)\b",
+    r"\b(torture|mutilate|dismember)\b",
 ]
+
+# Illegal Drugs patterns (CRITICAL - was missing comprehensive coverage)
+DRUG_PATTERNS = [
+    r"\b(drug|cocaine|heroin|meth|mdma|lsd|ecstasy|fentanyl)\s+(make|manufacture|produce|cook|synthesize|create)\b",
+    r"how\s+(do|can|to)\s+(I|we|you)\s+(make|get|buy|produce|cook|synthesize)\s+.*(cocaine|heroin|meth|drug|mdma|lsd|fentanyl)\b",
+    r"\bI\s+want\s+(to\s+)?(do|try|take|use|buy|get|make)\s+(drugs|cocaine|meth|heroin|mdma|lsd|weed|marijuana|fentanyl)\b",
+    r"where\s+(can|do)\s+I\s+(buy|get|find)\s+(drugs|cocaine|heroin|meth|mdma|lsd)\b",
+    r"\b(sell|deal|traffic)\s+(drugs|cocaine|heroin|meth|mdma|lsd)\b",
+    r"\b(snort|inject|smoke|shoot\s+up)\s+(cocaine|heroin|meth|crack)\b",
+]
+
+# Self-harm patterns
+SELF_HARM_PATTERNS = [
+    r"\b(suicide|kill\s+myself|end\s+my\s+life|take\s+my\s+life)\b",
+    r"\b(self[- ]?harm|cut\s+myself|hurt\s+myself)\b",
+    r"how\s+to\s+(commit\s+)?suicide",
+    r"\bI\s+want\s+to\s+(die|kill\s+myself|end\s+it)",
+]
+
+# Illegal activity patterns
+ILLEGAL_ACTIVITY_PATTERNS = [
+    r"\b(hack|exploit|breach|crack)\s+(into|system|network|account|password)\b",
+    r"\b(steal|rob|burglary|breaking\s+in|shoplifting)\b",
+    r"how\s+to\s+(steal|rob|hack|break\s+into)",
+    r"\b(forge|counterfeit|fake)\s+(money|currency|documents|id|passport)\b",
+    r"\b(fraud|scam|phishing)\s+(people|users|victims)\b",
+]
+
+# Child safety patterns
+CHILD_SAFETY_PATTERNS = [
+    r"\b(child|minor|underage|kid).{0,50}(sexual|explicit|porn|nude|naked)\b",
+    r"\b(pedophile|pedophilia|child\s+abuse)\b",
+]
+
+# Combine all harmful patterns for comprehensive checking
+HARMFUL_PATTERNS = (
+    VIOLENCE_PATTERNS +
+    DRUG_PATTERNS +
+    SELF_HARM_PATTERNS +
+    ILLEGAL_ACTIVITY_PATTERNS +
+    CHILD_SAFETY_PATTERNS
+)
+
+# Category mapping for better error messages
+PATTERN_CATEGORIES = {
+    'violence': VIOLENCE_PATTERNS,
+    'drugs': DRUG_PATTERNS,
+    'self_harm': SELF_HARM_PATTERNS,
+    'illegal_activity': ILLEGAL_ACTIVITY_PATTERNS,
+    'child_safety': CHILD_SAFETY_PATTERNS,
+}
+
+# Safe refusal templates
+REFUSAL_TEMPLATES = {
+    'violence': "I cannot provide information about violence or weapons. If you're in crisis, please contact emergency services.",
+    'drugs': "I cannot provide information about illegal drugs. If you're struggling with substance use, please reach out to a healthcare professional or call SAMHSA's National Helpline: 1-800-662-4357.",
+    'self_harm': "I'm concerned about your safety. If you're having thoughts of self-harm or suicide, please contact the National Suicide Prevention Lifeline at 988 or text 'HELLO' to 741741.",
+    'illegal_activity': "I cannot provide guidance on illegal activities. Please seek legitimate and legal alternatives.",
+    'child_safety': "I cannot engage with content involving minors in unsafe contexts. This is a serious matter - please report concerns to NCMEC at CyberTipline.org.",
+    'default': "I cannot assist with that request as it violates safety guidelines. Is there something else I can help you with?",
+}
 
 # AI Personality
 SYSTEM_PERSONALITY = os.getenv(
@@ -67,16 +143,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         first_error = errors[0]
         msg = first_error.get("msg", "Validation error")
         
-        # Check if it's one of our safety messages
-        if "safety guidelines" in msg or "injection" in msg.lower():
-            return JSONResponse(
-                status_code=400,
-                content={"error": msg}
-            )
+        # Always return just the error message (don't include details that might not serialize)
+        return JSONResponse(
+            status_code=400,
+            content={"error": str(msg)}
+        )
     
     return JSONResponse(
         status_code=422,
-        content={"error": "Invalid input", "details": errors}
+        content={"error": "Invalid input"}
     )
 
 class GenerateIn(BaseModel):
@@ -94,12 +169,15 @@ class GenerateIn(BaseModel):
         # Check for prompt injection attempts
         for pattern in INJECTION_PATTERNS:
             if re.search(pattern, v, re.IGNORECASE):
+                logger.warning(f"Prompt injection detected: {v[:100]}...")
                 raise ValueError("Prompt injection attempt detected")
         
-        # Check for harmful content
-        for pattern in HARMFUL_PATTERNS:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("This request contains content that violates our safety guidelines")
+        # Check for harmful content with category-specific messages
+        for category, patterns in PATTERN_CATEGORIES.items():
+            for pattern in patterns:
+                if re.search(pattern, v, re.IGNORECASE):
+                    logger.warning(f"Harmful content detected - Category: {category}, Input: {v[:100]}...")
+                    raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
         
         return v.strip()
 
@@ -119,12 +197,15 @@ class AskIn(BaseModel):
         # Check for prompt injection attempts
         for pattern in INJECTION_PATTERNS:
             if re.search(pattern, v, re.IGNORECASE):
+                logger.warning(f"Prompt injection detected: {v[:100]}...")
                 raise ValueError("Prompt injection attempt detected")
         
-        # Check for harmful content
-        for pattern in HARMFUL_PATTERNS:
-            if re.search(pattern, v, re.IGNORECASE):
-                raise ValueError("This request contains content that violates our safety guidelines")
+        # Check for harmful content with category-specific messages
+        for category, patterns in PATTERN_CATEGORIES.items():
+            for pattern in patterns:
+                if re.search(pattern, v, re.IGNORECASE):
+                    logger.warning(f"Harmful content detected - Category: {category}, Input: {v[:100]}...")
+                    raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
         
         return v.strip()
 
@@ -151,30 +232,85 @@ def ready():
     """Poll this to know when you can start chatting."""
     return {"ready": _is_model_ready(), "model": MODEL}
 
+def validate_output(text: str) -> tuple[bool, str, str]:
+    """Validate model output for harmful content.
+    Returns: (is_safe, text_or_refusal, violation_category)
+    """
+    if not text or not text.strip():
+        return True, text, None
+    
+    # Check output against all harmful patterns
+    for category, patterns in PATTERN_CATEGORIES.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                logger.error(f"OUTPUT VIOLATION - Category: {category}, Text: {text[:100]}...")
+                return False, REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']), category
+    
+    # Check for common harmful phrases that might slip through
+    harmful_phrases = [
+        r"(?:drug|cocaine|heroin|meth).*(?:is a )?personal choice",
+        r"I can help you (?:make|create|build) (?:a bomb|weapon|explosive)",
+        r"here's how to (?:kill|murder|harm)",
+        r"you should (?:kill yourself|commit suicide|self[- ]?harm)",
+    ]
+    
+    for phrase in harmful_phrases:
+        if re.search(phrase, text, re.IGNORECASE):
+            logger.error(f"OUTPUT VIOLATION - Harmful phrase detected: {text[:100]}...")
+            return False, REFUSAL_TEMPLATES['default'], 'harmful_phrase'
+    
+    return True, text, None
+
 @app.post("/generate")
 async def generate(payload: GenerateIn):
+    logger.info(f"Generate request: {payload.prompt[:50]}...")
+    
     body = {
         "model": MODEL,
         "prompt": payload.prompt,
         "stream": False,
-        "options": {"temperature": payload.temperature},
+        "options": {
+            "temperature": payload.temperature,
+            "num_predict": MAX_OUTPUT_TOKENS,
+        },
     }
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
-        r.raise_for_status()
-        return r.json()
+    
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
+            r.raise_for_status()
+            result = r.json()
+            
+            # CRITICAL: Validate output before returning
+            response_text = result.get("response", "")
+            is_safe, validated_text, violation_category = validate_output(response_text)
+            
+            if not is_safe:
+                logger.error(f"Blocked unsafe output - Category: {violation_category}")
+                result["response"] = validated_text
+            
+            return result
+    except httpx.HTTPError as e:
+        logger.error(f"Model service error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model service error: {str(e)}")
 
 @app.post("/ask")
 async def ask(payload: AskIn):
-    # Apply personality to the prompt
+    logger.info(f"Ask request: {payload.question[:50]}...")
+    
+    # Apply personality with explicit safety instruction
     personality = payload.personality or SYSTEM_PERSONALITY
-    enhanced_prompt = f"{personality}\n\nQuestion: {payload.question}\n\nAnswer:"
+    safety_instruction = "\n\nIMPORTANT: Never provide information about violence, illegal drugs, self-harm, illegal activities, or harmful content. If asked, politely decline."
+    enhanced_prompt = f"{personality}{safety_instruction}\n\nQuestion: {payload.question}\n\nAnswer:"
     
     body = {
         "model": MODEL,
         "prompt": enhanced_prompt,
         "stream": False,
-        "options": {"temperature": payload.temperature},
+        "options": {
+            "temperature": payload.temperature,
+            "num_predict": MAX_OUTPUT_TOKENS,
+        },
     }
     
     try:
@@ -185,18 +321,24 @@ async def ask(payload: AskIn):
             answer = data.get("response", "").strip()
             
             # Clean up the response - remove any continuation of fake dialogue
-            # Stop at first occurrence of "User:", "Question:", or double newline followed by dialogue
             stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:"]
             for marker in stop_markers:
                 if marker in answer:
                     answer = answer.split(marker)[0].strip()
             
-            # Basic output filtering (remove potential harmful content markers)
+            # CRITICAL: Validate output before returning
+            is_safe, validated_answer, violation_category = validate_output(answer)
+            
+            if not is_safe:
+                logger.error(f"Blocked unsafe output in /ask - Category: {violation_category}")
+                answer = validated_answer
+            
             if not answer:
                 answer = "I apologize, but I couldn't generate a proper response."
             
             return {"answer": answer, "model": MODEL}
     except httpx.HTTPError as e:
+        logger.error(f"Model service error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Model service error: {str(e)}")
 
 # Serve React frontend static files from dist/
@@ -228,4 +370,4 @@ if _dist.exists():
         return FileResponse(_dist / "index.html")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
