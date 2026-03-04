@@ -58,14 +58,16 @@ VIOLENCE_PATTERNS = [
     r"I\s+want\s+to\s+(hurt|harm|kill|murder|beat|attack)\b",
 ]
 
-# Illegal Drugs patterns (CRITICAL - was missing comprehensive coverage)
+# Illegal Drugs patterns
 DRUG_PATTERNS = [
-    r"\b(drug|cocaine|heroin|meth|mdma|lsd|ecstasy|fentanyl)\s+(make|manufacture|produce|cook|synthesize|create)\b",
-    r"how\s+(do|can|to)\s+(I|we|you)\s+(make|get|buy|produce|cook|synthesize)\s+.*(cocaine|heroin|meth|drug|mdma|lsd|fentanyl)\b",
-    r"\bI\s+want\s+(to\s+)?(do|try|take|use|buy|get|make)\s+(drugs|cocaine|meth|heroin|mdma|lsd|weed|marijuana|fentanyl)\b",
-    r"where\s+(can|do)\s+I\s+(buy|get|find)\s+(drugs|cocaine|heroin|meth|mdma|lsd)\b",
-    r"\b(sell|deal|traffic)\s+(drugs|cocaine|heroin|meth|mdma|lsd)\b",
-    r"\b(snort|inject|smoke|shoot\s+up)\s+(cocaine|heroin|meth|crack)\b",
+    r"\b(drug|cocaine|coke|heroin|meth|mdma|lsd|ecstasy|fentanyl)\s+(make|manufacture|produce|cook|synthesize|create)\b",
+    r"how\s+(do|can|to)\s+(I|we|you)\s+(make|get|buy|produce|cook|synthesize|consume|use|take)\s+.*(cocaine|coke|heroin|meth|drug|mdma|lsd|fentanyl)\b",
+    r"how\s+to\s+(consume|use|take|smoke|snort|inject|ingest|do|try|buy|get|make|cook|produce)\s+.*(cocaine|coke|heroin|meth|drugs|mdma|lsd|fentanyl|crack|weed|marijuana|ecstasy)\b",
+    r"\bI\s+want\s+(to\s+)?(do|try|take|use|buy|get|make|consume)\s+(drugs|cocaine|coke|meth|heroin|mdma|lsd|weed|marijuana|fentanyl)\b",
+    r"where\s+(can|do)\s+I\s+(buy|get|find)\s+(drugs|cocaine|coke|heroin|meth|mdma|lsd)\b",
+    r"\b(sell|deal|traffic)\s+(drugs|cocaine|coke|heroin|meth|mdma|lsd)\b",
+    r"\b(snort|inject|smoke|shoot\s+up)\s+(cocaine|coke|heroin|meth|crack)\b",
+    r"\b(consume|consuming)\s+(cocaine|coke|heroin|meth|drugs|mdma|lsd|fentanyl|crack)\b",
 ]
 
 # Self-harm patterns
@@ -79,7 +81,7 @@ SELF_HARM_PATTERNS = [
 # Illegal activity patterns
 ILLEGAL_ACTIVITY_PATTERNS = [
     r"\b(hack|exploit|breach|crack)\s+(into|system|network|account|password)\b",
-    r"\b(steal|rob|burglary|breaking\s+in|shoplifting)\b",
+    r"\b(how\s+to|I\s+want\s+to|teach\s+me\s+to|help\s+me|let'?s)\s+(steal|rob|shoplift|break\s+into)\b",
     r"how\s+to\s+(steal|rob|hack|break\s+into)",
     r"\b(forge|counterfeit|fake)\s+(money|currency|documents|id|passport)\b",
     r"\b(fraud|scam|phishing)\s+(people|users|victims)\b",
@@ -150,10 +152,10 @@ REFUSAL_TEMPLATES = {
     ),
 }
 
-# AI Personality - Ultra-simplified for TinyLlama
+# AI Personality - Optimized for TinyLlama
 SYSTEM_PERSONALITY = os.getenv(
     "AI_PERSONALITY",
-    "Answer directly and briefly."
+    "Answer directly with specific facts, names, and examples. Do not repeat the question."
 )
 
 app = FastAPI()
@@ -307,8 +309,8 @@ async def generate(payload: GenerateIn):
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": 150,
-            "stop": ["\n\n", "Question:", "User:", "Asker:"],
+            "num_predict": 500,
+            "stop": ["Question:", "User:", "Asker:"],
         },
     }
     
@@ -380,16 +382,19 @@ async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
     
     personality = payload.personality or SYSTEM_PERSONALITY
-    full_prompt = f"{personality} {payload.question}"
+    # Cap personality length — TinyLlama can't handle long system prompts
+    if len(personality) > 200:
+        personality = personality[:200].rsplit('.', 1)[0] + '.'
     
     body = {
         "model": MODEL,
-        "prompt": full_prompt,
+        "system": personality,
+        "prompt": payload.question,
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": 150,  # Reduced for concise responses
-            "stop": ["\n\n", "Question:", "User:", "Asker:"],  # Stop rambling
+            "num_predict": 3000,
+            "stop": ["Question:", "User:", "Asker:"],
         },
     }
     
