@@ -511,7 +511,7 @@ async def ask(payload: AskIn):
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": 500,
+            "num_predict": 3000,
             "stop": ["Question:", "User:", "Asker:"],
         },
     }
