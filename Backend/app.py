@@ -3,6 +3,7 @@ import httpx
 import re
 import logging
 import asyncio
+import time
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,12 @@ logger = logging.getLogger(__name__)
 PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL = os.getenv("MODEL", "tinyllama:1.1b")
+# Comma-separated list of allowed CORS origins (set in .env for production)
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173").split(",")
+    if o.strip()
+]
 
 # Guardrails Configuration
 MAX_INPUT_LENGTH = 2000
@@ -46,111 +53,261 @@ INJECTION_PATTERNS = [
     r"sudo\s+mode",
 ]
 
-# Violence & Weapons patterns
-VIOLENCE_PATTERNS = [
-    r"\b(bomb|explosive|detonate|c4|dynamite|grenade|ied|pipe\s+bomb)\b",
-    r"\b(weapon|gun|firearm|ammunition|rifle|pistol|shotgun)\b",
-    r"\b(kill|murder|assassinate|execute)\s+(someone|people|person|him|her)",
-    r"\b(hurt|harm|injure|attack|beat)\s+(someone|people|person|him|her|my\s+friend|them)",
-    r"how\s+to\s+(kill|murder|assassinate|harm|hurt|injure)",
-    r"\b(terrorism|terrorist\s+attack|mass\s+shooting)\b",
-    r"\b(torture|mutilate|dismember)\b",
-    r"I\s+want\s+to\s+(hurt|harm|kill|murder|beat|attack)\b",
+# ── S1: Violent Crimes ──────────────────────────────────────────────────────
+S1_VIOLENT_CRIMES = [
+    r"\b(kill|murder|assassinate|execute)\s+(someone|people|person|him|her|them)\b",
+    r"\b(hurt|harm|injure|attack|beat|stab|shoot)\s+(someone|people|person|him|her|my\s+\w+|them)\b",
+    r"how\s+to\s+(kill|murder|assassinate|harm|hurt|injure|attack|stab|shoot)\b",
+    r"\b(terrorism|terrorist\s+attack|mass\s+shooting|mass\s+murder|genocide)\b",
+    r"\b(torture|mutilate|dismember|maim)\b",
+    r"I\s+want\s+to\s+(hurt|harm|kill|murder|beat|attack|stab|shoot)\b",
+    r"\b(assault|kidnap|abduct)\s+(someone|a\s+person|him|her|them)\b",
+    r"how\s+to\s+(commit|carry\s+out)\s+(a\s+)?(murder|assault|attack|kidnapping)\b",
+    r"\b(serial\s+killer|hitman|contract\s+kill)\b",
+    r"plan\s+(to\s+)?(kill|murder|attack|harm)\s+(someone|a\s+person|people)\b",
+    # ── Arson / fire attacks ──
+    r"\b(arson|arsonist|firebomb|fire.?bomb|molotov)\b",
+    r"how\s+to\s+(blast|blow\s+up|destroy|burn\s+down|torch|set\s+(fire|alight)\s+to)\s+(a\s+)?(car|vehicle|building|house|property|bus|truck)\b",
+    r"\b(blast|blow\s+up)\s+(a\s+)?(car|vehicle|building|house|property)\b",
+    r"using\s+(petrol|gasoline|fuel|accelerant).{0,40}(burn|blast|destroy|set\s+fire|torch|ignite)\b",
+    r"(pour|splash|douse).{0,30}(petrol|gasoline|fuel|accelerant).{0,30}(car|vehicle|building|house)\b",
+    r"how\s+to\s+(start\s+a\s+fire|ignite).{0,30}(car|vehicle|building|house)\b",
 ]
 
-# Illegal Drugs patterns
-DRUG_PATTERNS = [
+# ── S2: Non-Violent Crimes ────────────────────────────────────────────────────
+S2_NONVIOLENT_CRIMES = [
+    r"\b(hack|exploit|breach|crack)\s+(into|a\s+)?(system|network|account|password|server|database)\b",
+    r"how\s+to\s+(steal|rob|shoplift|burglarize|break\s+into|pick\s+a\s+lock)\b",
+    r"\b(forge|counterfeit|fake)\s+(money|currency|documents|id|passport|signature|check)\b",
+    r"\b(fraud|scam|phishing|identity\s+theft|ponzi|embezzle)\b",
+    r"how\s+to\s+(launder|hide)\s+money\b",
+    r"\b(ransomware|malware|trojan|keylogger|spyware)\s+(create|build|make|deploy|install)\b",
+    r"how\s+to\s+(evade|avoid)\s+(taxes|tax|the\s+irs|customs)\b",
+    r"how\s+to\s+(hotwire|steal)\s+(a\s+)?(car|vehicle)\b",
+    r"\b(bribe|blackmail|extort)\s+(someone|a\s+person|official|police)\b",
+    r"how\s+to\s+make\s+(fake|counterfeit)\s+(money|currency|bills?|id|documents?)\b",
+]
+
+# ── S3: Sex-Related Crimes ────────────────────────────────────────────────────
+S3_SEX_CRIMES = [
+    r"\b(rape|sexual\s+assault|molest)\s+(someone|a\s+person|him|her|them)\b",
+    r"how\s+to\s+(drug|spike)\s+(someone.{0,20}drink|a\s+drink)\b",
+    r"how\s+to\s+(get\s+away\s+with|commit)\s+(rape|sexual\s+assault)\b",
+    r"\b(sex\s+trafficking|human\s+trafficking)\b",
+    r"how\s+to\s+(coerce|force|pressure)\s+someone\s+(into\s+sex|to\s+have\s+sex)\b",
+    r"\b(non.?consensual|without\s+consent).{0,40}(sex|intercourse|touching)\b",
+    r"how\s+to\s+(film|record)\s+someone\s+(without|secretly).{0,30}(naked|sex|nude)\b",
+]
+
+# ── S4: Child Sexual Exploitation ────────────────────────────────────────────
+S4_CHILD_SAFETY = [
+    r"\b(child|minor|underage|kid|teen).{0,50}(sexual|explicit|porn|nude|naked|erotic)\b",
+    r"\b(pedophile|pedophilia|child\s+sexual\s+abuse|csam|csem)\b",
+    r"\b(groom|grooming)\s+(a\s+)?(child|minor|kid|teen)\b",
+    r"how\s+to\s+(attract|seduce|approach)\s+(children|minors|kids|a\s+child|a\s+minor)\b",
+    r"sexual.{0,30}(child|minor|kid|underage|teen)\b",
+]
+
+# ── S5: Defamation ────────────────────────────────────────────────────────────
+S5_DEFAMATION = [
+    r"write\s+(a\s+)?(fake|false|fabricated|made.up)\s+(story|article|news|post|review).{0,40}(about|against)\b",
+    r"make\s+(someone|a\s+person|him|her)\s+look\s+(guilty|criminal|bad|evil)\s+(with\s+)?(false|fake|lies)\b",
+    r"spread\s+(false|fake|fabricated)\s+(rumor|information|news|story)\s+(about|against)\b",
+    r"how\s+to\s+(defame|slander|libel)\s+(someone|a\s+person)\b",
+    r"(create|write|generate)\s+(fake|false)\s+(accusation|allegation).{0,30}(against|about)\b",
+]
+
+# ── S6: Specialized Advice (dangerous substances & illegal drugs) ─────────────
+S6_SPECIALIZED_ADVICE = [
+    r"how\s+to\s+(make|build|create|synthesize|produce)\s+(poison|toxin|venom|ricin|sarin|vx\s+gas|nerve\s+agent)\b",
+    r"\b(poison|toxic|lethal)\s+(dose|amount|quantity).{0,30}(kill|harm|hurt|injure|murder)\b",
+    r"how\s+to\s+(make|create|brew|distill)\s+(methamphetamine|meth|crystal\s+meth|heroin|fentanyl|crack)\b",
     r"\b(drug|cocaine|coke|heroin|meth|mdma|lsd|ecstasy|fentanyl)\s+(make|manufacture|produce|cook|synthesize|create)\b",
     r"how\s+(do|can|to)\s+(I|we|you)\s+(make|get|buy|produce|cook|synthesize|consume|use|take)\s+.*(cocaine|coke|heroin|meth|drug|mdma|lsd|fentanyl)\b",
-    r"how\s+to\s+(consume|use|take|smoke|snort|inject|ingest|do|try|buy|get|make|cook|produce)\s+.*(cocaine|coke|heroin|meth|drugs|mdma|lsd|fentanyl|crack|weed|marijuana|ecstasy)\b",
-    r"\bI\s+want\s+(to\s+)?(do|try|take|use|buy|get|make|consume)\s+(drugs|cocaine|coke|meth|heroin|mdma|lsd|weed|marijuana|fentanyl)\b",
+    r"how\s+to\s+(consume|use|take|smoke|snort|inject|ingest|do|try|buy|get|make|cook|produce)\s+.*(cocaine|coke|heroin|meth|drugs|mdma|lsd|fentanyl|crack|ecstasy)\b",
+    r"\bI\s+want\s+(to\s+)?(do|try|take|use|buy|get|make|consume)\s+(drugs|cocaine|coke|meth|heroin|mdma|lsd|fentanyl)\b",
     r"where\s+(can|do)\s+I\s+(buy|get|find)\s+(drugs|cocaine|coke|heroin|meth|mdma|lsd)\b",
     r"\b(sell|deal|traffic)\s+(drugs|cocaine|coke|heroin|meth|mdma|lsd)\b",
-    r"\b(snort|inject|smoke|shoot\s+up)\s+(cocaine|coke|heroin|meth|crack)\b",
-    r"\b(consume|consuming)\s+(cocaine|coke|heroin|meth|drugs|mdma|lsd|fentanyl|crack)\b",
+    r"\b(snort|inject|shoot\s+up)\s+(cocaine|coke|heroin|meth|crack)\b",
 ]
 
-# Self-harm patterns
-SELF_HARM_PATTERNS = [
-    r"\b(suicide|kill\s+myself|end\s+my\s+life|take\s+my\s+life)\b",
-    r"\b(self[- ]?harm|cut\s+myself|hurt\s+myself)\b",
+# ── S7: Privacy ───────────────────────────────────────────────────────────────
+S7_PRIVACY = [
+    r"how\s+to\s+(stalk|track|spy\s+on|surveil|monitor)\s+(someone|a\s+person|him|her)\s+(without|secretly)\b",
+    r"how\s+to\s+(find|get|access)\s+(someone.{0,20})?(address|location|phone\s+number|ssn|social\s+security)\s+without\b",
+    r"\b(dox|doxx|doxing|doxxing)\s+(someone|a\s+person|him|her)\b",
+    r"how\s+to\s+(hack|access|break\s+into)\s+(someone.{0,20})?(email|account|phone|device|computer)\b",
+    r"how\s+to\s+(install|put)\s+(spyware|stalkerware|keylogger|tracking\s+software)\s+on\s+(someone|their)\b",
+    r"\b(non.?consensual|without\s+permission|without\s+consent).{0,40}(photo|image|video|record|film|share)\b",
+]
+
+# ── S8: Intellectual Property ─────────────────────────────────────────────────
+S8_IP = [
+    r"how\s+to\s+(pirate|illegally\s+download|torrent)\s+(movies?|music|software|games?|books?)\b",
+    r"how\s+to\s+(bypass|crack|remove|circumvent)\s+(drm|copyright\s+protection|license)\b",
+    r"(copy|reproduce|steal|plagiarize).{0,30}(copyrighted|patented|trademarked)\s+(work|content|material|code|design)\b",
+    r"how\s+to\s+(sell|distribute)\s+(pirated|cracked|stolen)\s+(software|content|movies?|music)\b",
+]
+
+# ── S9: Indiscriminate Weapons (CBRN + illegal firearms) ──────────────────────
+S9_WEAPONS = [
+    r"\b(bomb|explosive|detonate|c4|dynamite|grenade|ied|pipe\s+bomb|landmine|claymore)\b",
+    r"how\s+to\s+(make|build|create|assemble|construct)\s+(a\s+)?(bomb|explosive|grenade|ied|pipe\s+bomb|landmine)\b",
+    r"\b(nuclear|biological|chemical|radiological)\s+(weapon|bomb|attack|agent|warfare)\b",
+    r"how\s+to\s+(enrich|obtain|acquire)\s+(uranium|plutonium|radioactive)\b",
+    r"\b(anthrax|smallpox|plague|ebola|bioweapon|bio.?weapon)\b",
+    r"how\s+to\s+(synthesize|produce|make|weaponize)\s+(sarin|vx|mustard\s+gas|nerve\s+agent|chlorine\s+gas)\b",
+    r"\b(fully\s+automatic|convert.{0,20}semi.{0,10}auto|illegal\s+modification)\s+(gun|rifle|weapon|firearm)\b",
+    r"how\s+to\s+(3d\s+print|manufacture|make)\s+(a\s+)?(gun|firearm|weapon|suppressor|silencer)\b",
+    r"how\s+to\s+(obtain|buy|acquire)\s+(guns?|weapons?|firearms?|ammo)\s+(illegally|without\s+(a\s+)?background\s+check)\b",
+]
+
+# ── S10: Hate ─────────────────────────────────────────────────────────────────
+S10_HATE = [
+    r"\b(kill|exterminate|eliminate|wipe\s+out)\s+(all\s+)?(jews?|muslims?|christians?|black\s+people|white\s+people|gay|lgbtq|immigrants?)\b",
+    r"\b(white\s+supremacy|white\s+power|nazi|neo.?nazi|kkk|ku\s+klux\s+klan)\b",
+    r"\b(n[i1]gg[e3]r|ch[i1]nk|sp[i1]c|k[i1]ke|f[a4]gg[o0]t)\b",
+    r"\b(jews?|muslims?|blacks?|gays?|immigrants?|refugees?)\s+.{0,30}\b(inferior|subhuman|evil|filthy|vermin|animals?|parasites?)\b",
+    r"(write|create|generate|make).{0,30}(racist|antisemitic|islamophobic|homophobic|transphobic|sexist)\s+(joke|content|speech|post|story|propaganda)\b",
+    r"\b(racial|ethnic|religious)\s+(cleansing|purge|genocide)\b",
+    r"\b(supremacist|extremist|radicalize)\s+(group|ideology|content|propaganda)\b",
+]
+
+# ── S11: Suicide & Self-Harm ──────────────────────────────────────────────────
+S11_SELF_HARM = [
+    r"\b(suicide|kill\s+myself|end\s+my\s+life|take\s+my\s+life|end\s+it\s+all)\b",
+    r"\b(self[- ]?harm|cut\s+myself|hurt\s+myself|burn\s+myself)\b",
     r"how\s+to\s+(commit\s+)?suicide",
-    r"\bI\s+want\s+to\s+(die|kill\s+myself|end\s+it)",
+    r"\bI\s+want\s+to\s+(die|kill\s+myself|end\s+it|disappear\s+forever)\b",
+    r"how\s+to\s+(overdose|od)\s+(on|from)\b",
+    r"what\s+(pills?|drugs?|medication).{0,30}(kill|overdose|lethal|suicide)\b",
+    r"how\s+(many|much).{0,20}(pills?|tablets?|mg).{0,20}(kill|lethal|fatal|overdose)\b",
+    r"\b(methods?|ways?)\s+(to\s+)?(commit\s+)?suicide\b",
+    r"I\s+(am\s+going\s+to|will|plan\s+to)\s+(kill\s+myself|end\s+my\s+life|commit\s+suicide)\b",
 ]
 
-# Illegal activity patterns
-ILLEGAL_ACTIVITY_PATTERNS = [
-    r"\b(hack|exploit|breach|crack)\s+(into|system|network|account|password)\b",
-    r"\b(how\s+to|I\s+want\s+to|teach\s+me\s+to|help\s+me|let'?s)\s+(steal|rob|shoplift|break\s+into)\b",
-    r"how\s+to\s+(steal|rob|hack|break\s+into)",
-    r"\b(forge|counterfeit|fake)\s+(money|currency|documents|id|passport)\b",
-    r"\b(fraud|scam|phishing)\s+(people|users|victims)\b",
+# ── S12: Sexual Content ───────────────────────────────────────────────────────
+S12_SEXUAL = [
+    r"write\s+(a\s+)?(explicit|graphic|erotic|sexual|nsfw|pornographic)\s+(story|scene|content|description|fantasy)\b",
+    r"\b(porn|pornography|pornographic|explicit\s+sex|graphic\s+sex)\s+(create|write|generate|make|produce)\b",
+    r"describe\s+(in\s+detail\s+)?(sexual|explicit|erotic|graphic).{0,30}(act|scene|encounter)\b",
+    r"\b(sexual|erotic|explicit)\s+(roleplay|rp)\b",
+    r"(generate|create|write|make).{0,20}(nude|naked|topless|explicit)\s+(image|photo|picture|description)\b",
 ]
 
-# Child safety patterns
-CHILD_SAFETY_PATTERNS = [
-    r"\b(child|minor|underage|kid).{0,50}(sexual|explicit|porn|nude|naked)\b",
-    r"\b(pedophile|pedophilia|child\s+abuse)\b",
-]
-
-# Category mapping for better error messages
+# Category mapping — all 12 hazard categories
 PATTERN_CATEGORIES = {
-    'violence': VIOLENCE_PATTERNS,
-    'drugs': DRUG_PATTERNS,
-    'self_harm': SELF_HARM_PATTERNS,
-    'illegal_activity': ILLEGAL_ACTIVITY_PATTERNS,
-    'child_safety': CHILD_SAFETY_PATTERNS,
+    'S1_violent_crimes':     S1_VIOLENT_CRIMES,
+    'S2_nonviolent_crimes':  S2_NONVIOLENT_CRIMES,
+    'S3_sex_crimes':         S3_SEX_CRIMES,
+    'S4_child_safety':       S4_CHILD_SAFETY,
+    'S5_defamation':         S5_DEFAMATION,
+    'S6_specialized_advice': S6_SPECIALIZED_ADVICE,
+    'S7_privacy':            S7_PRIVACY,
+    'S8_ip':                 S8_IP,
+    'S9_weapons':            S9_WEAPONS,
+    'S10_hate':              S10_HATE,
+    'S11_self_harm':         S11_SELF_HARM,
+    'S12_sexual':            S12_SEXUAL,
 }
 
 # Safe refusal templates
 REFUSAL_TEMPLATES = {
-    "violence": (
-        "I can’t help with requests that involve harming others, weapons, "
-        "or violent wrongdoing. If you’re feeling angry or overwhelmed, "
-        "I can help you think through safer ways to handle the situation."
+    "S1_violent_crimes": (
+        "I can't help with requests that involve violent crimes or harming others. "
+        "If you're feeling angry or overwhelmed, I can help you think through safer ways to handle the situation."
     ),
-
-    "drugs": (
-        "I can’t assist with obtaining, making, or using illegal drugs. "
-        "If you're looking for information about health effects, treatment, "
-        "or recovery options, I’d be glad to help."
+    "S2_nonviolent_crimes": (
+        "I can't help with planning or carrying out illegal activities. "
+        "If you'd like, I can help you explore legal and constructive alternatives."
     ),
-
-    "self_harm": (
-        "I’m really sorry that you’re feeling this way. I can’t help with "
-        "anything involving self-harm. You don’t have to handle this alone — "
-        "if you’re in the India., you can call or text 988 for immediate support. "
-        "If you’re elsewhere, I can help find a local resource."
+    "S3_sex_crimes": (
+        "I can't assist with content related to sexual crimes or non-consensual acts. "
+        "If you need support, please reach out to a trusted authority or helpline."
     ),
-
-    "illegal_activity": (
-        "I can’t help with planning or carrying out illegal activities. "
-        "If you’d like, I can help you explore legal and constructive alternatives."
-    ),
-
-    "child_safety": (
-        "I can’t engage with content that involves minors in unsafe or exploitative contexts. "
-        "If you’re concerned about a child’s safety, please contact local authorities "
+    "S4_child_safety": (
+        "I can't engage with content that involves minors in unsafe or exploitative contexts. "
+        "If you're concerned about a child's safety, please contact local authorities "
         "or an appropriate child protection organization in your area."
     ),
-
-    "privacy": (
-        "I can’t help with accessing someone’s private information, accounts, "
-        "or data without their consent. If you’re trying to recover your own "
-        "account, I can guide you through legitimate recovery options."
+    "S5_defamation": (
+        "I can't help create false or defamatory content about individuals or groups. "
+        "If you'd like help with factual, constructive writing, I'm happy to assist."
     ),
-
-    "hate_or_harassment": (
-        "I can’t assist with content that targets or harms individuals or groups. "
-        "If you’d like help expressing your concerns in a respectful and constructive way, "
-        "I’m here to help."
+    "S6_specialized_advice": (
+        "I can't assist with obtaining, making, or using illegal drugs or dangerous substances. "
+        "If you're looking for information about health effects, treatment, "
+        "or recovery options, I'd be glad to help."
     ),
-
+    "S7_privacy": (
+        "I can't help with accessing someone's private information, tracking, or surveilling "
+        "others without their consent. If you're trying to recover your own account, "
+        "I can guide you through legitimate recovery options."
+    ),
+    "S8_ip": (
+        "I can't help with pirating, plagiarizing, or circumventing intellectual property protections. "
+        "I can help you find legal ways to access or use the content you're looking for."
+    ),
+    "S9_weapons": (
+        "I can't help with requests involving weapons, explosives, or CBRN materials. "
+        "If you're feeling unsafe or threatened, please contact local emergency services."
+    ),
+    "S10_hate": (
+        "I can't assist with content that promotes hate, discrimination, or violence against "
+        "any individual or group. If you'd like help expressing concerns constructively, I'm here."
+    ),
+    "S11_self_harm": (
+        "I'm really sorry that you're feeling this way. I can't help with anything involving "
+        "self-harm or suicide. You don't have to handle this alone — "
+        "please reach out to iCall at 9152987821 (India) or a local crisis helpline. "
+        "I can help you find support resources."
+    ),
+    "S12_sexual": (
+        "I can't assist with generating explicit or pornographic content. "
+        "If you have questions about health, relationships, or wellness, I'm happy to help."
+    ),
     "default": (
-        "I can’t help with that request. If you’d like, tell me more about "
-        "what you’re trying to accomplish and I’ll do my best to help in a safe way."
+        "I can't help with that request. If you'd like, tell me more about "
+        "what you're trying to accomplish and I'll do my best to help in a safe way."
     ),
 }
+
+# ── Shared input validator ────────────────────────────────────────────────────
+def validate_input(text: str) -> str:
+    """Single source-of-truth validator for all user-supplied text fields."""
+    if not text or not text.strip():
+        raise ValueError("Input cannot be empty")
+    if len(text) > MAX_INPUT_LENGTH:
+        raise ValueError(f"Input too long. Max {MAX_INPUT_LENGTH} characters")
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            logger.warning(f"Prompt injection detected: {text[:100]}...")
+            raise ValueError("Prompt injection attempt detected")
+    for category, patterns in PATTERN_CATEGORIES.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                logger.warning(f"Harmful content detected - Category: {category}, Input: {text[:100]}...")
+                raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
+    return text.strip()
+
+# ── Shared LLM output cleaner ─────────────────────────────────────────────────
+_STOP_MARKERS = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
+_LEADING_PREFIXES = ["AI:", "Asker:", "Assistant:", "Answer:", "Response:"]
+
+def clean_llm_text(text: str) -> str:
+    """Strip fake-dialogue continuations and leading role-prefixes from LLM output."""
+    for marker in _STOP_MARKERS:
+        if marker in text:
+            text = text.split(marker)[0].strip()
+    while True:
+        snapshot = text
+        for prefix in _LEADING_PREFIXES:
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
+                break
+        if snapshot == text:
+            break
+    return text
 
 # AI Personality - Optimized for TinyLlama
 SYSTEM_PERSONALITY = os.getenv(
@@ -162,10 +319,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 @app.exception_handler(RequestValidationError)
@@ -199,25 +356,7 @@ class GenerateIn(BaseModel):
     @field_validator('prompt')
     @classmethod
     def validate_prompt(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("Prompt cannot be empty")
-        if len(v) > MAX_INPUT_LENGTH:
-            raise ValueError(f"Prompt too long. Max {MAX_INPUT_LENGTH} characters")
-        
-        # Check for prompt injection attempts
-        for pattern in INJECTION_PATTERNS:
-            if re.search(pattern, v, re.IGNORECASE):
-                logger.warning(f"Prompt injection detected: {v[:100]}...")
-                raise ValueError("Prompt injection attempt detected")
-        
-        # Check for harmful content with category-specific messages
-        for category, patterns in PATTERN_CATEGORIES.items():
-            for pattern in patterns:
-                if re.search(pattern, v, re.IGNORECASE):
-                    logger.warning(f"Harmful content detected - Category: {category}, Input: {v[:100]}...")
-                    raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
-        
-        return v.strip()
+        return validate_input(v)
 
 class AskIn(BaseModel):
     question: str
@@ -227,38 +366,29 @@ class AskIn(BaseModel):
     @field_validator('question')
     @classmethod
     def validate_question(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("Question cannot be empty")
-        if len(v) > MAX_INPUT_LENGTH:
-            raise ValueError(f"Question too long. Max {MAX_INPUT_LENGTH} characters")
-        
-        # Check for prompt injection attempts
-        for pattern in INJECTION_PATTERNS:
-            if re.search(pattern, v, re.IGNORECASE):
-                logger.warning(f"Prompt injection detected: {v[:100]}...")
-                raise ValueError("Prompt injection attempt detected")
-        
-        # Check for harmful content with category-specific messages
-        for category, patterns in PATTERN_CATEGORIES.items():
-            for pattern in patterns:
-                if re.search(pattern, v, re.IGNORECASE):
-                    logger.warning(f"Harmful content detected - Category: {category}, Input: {v[:100]}...")
-                    raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
-        
-        return v.strip()
+        return validate_input(v)
 
-def _is_model_ready():
-    """Check if the model is fully loaded in Ollama."""
+_model_ready_cache: dict = {"result": False, "expires": 0.0}
+
+def _is_model_ready() -> bool:
+    """Check if the model is fully loaded in Ollama (result cached for 5 s)."""
+    now = time.monotonic()
+    if now < _model_ready_cache["expires"]:
+        return _model_ready_cache["result"]
+    result = False
     try:
         r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.0)
         if r.status_code == 200:
             models = r.json().get("models", [])
             for m in models:
                 if m.get("name") == MODEL or m.get("name", "").startswith(MODEL):
-                    return True
+                    result = True
+                    break
     except Exception:
         pass
-    return False
+    _model_ready_cache["result"] = result
+    _model_ready_cache["expires"] = now + 5.0
+    return result
 
 @app.get("/health")
 def health():
@@ -288,8 +418,12 @@ def validate_output(text: str) -> tuple[bool, str, str]:
     harmful_phrases = [
         r"(?:drug|cocaine|heroin|meth).*(?:is a )?personal choice",
         r"I can help you (?:make|create|build) (?:a bomb|weapon|explosive)",
-        r"here's how to (?:kill|murder|harm)",
+        r"here'?s?\s+how\s+to\s+(?:kill|murder|harm|blast|blow\s+up|burn|destroy|torch)",
         r"you should (?:kill yourself|commit suicide|self[- ]?harm)",
+        # Catch numbered/step-by-step destructive instructions
+        r"step\s*\d+\.?.{0,80}(?:petrol|gasoline|fuel|accelerant|ignite|detonate|explode)",
+        r"(?:pour|splash|douse|add).{0,30}(?:petrol|gasoline|fuel).{0,30}(?:tank|car|engine)",
+        r"(?:blast|blow\s+up|torch|set\s+fire|burn\s+down).{0,30}(?:car|vehicle|building|house)",
     ]
     
     for phrase in harmful_phrases:
@@ -326,23 +460,7 @@ async def generate(payload: GenerateIn):
                 result = r.json()
                 
                 # Clean up the response
-                response_text = result.get("response", "").strip()
-                
-                # Remove fake dialogue continuations
-                stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
-                for marker in stop_markers:
-                    if marker in response_text:
-                        response_text = response_text.split(marker)[0].strip()
-                
-                # Remove leading prefixes
-                while True:
-                    cleaned = response_text
-                    for prefix in ["AI:", "Asker:", "Assistant:", "Answer:", "Response:"]:
-                        if response_text.lower().startswith(prefix.lower()):
-                            response_text = response_text[len(prefix):].strip()
-                            break
-                    if cleaned == response_text:
-                        break
+                response_text = clean_llm_text(result.get("response", "").strip())
                 
                 # Validate output before returning
                 is_safe, validated_text, violation_category = validate_output(response_text)
@@ -393,7 +511,7 @@ async def ask(payload: AskIn):
         "stream": False,
         "options": {
             "temperature": payload.temperature,
-            "num_predict": 3000,
+            "num_predict": 500,
             "stop": ["Question:", "User:", "Asker:"],
         },
     }
@@ -408,23 +526,7 @@ async def ask(payload: AskIn):
                 r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
                 r.raise_for_status()
                 data = r.json()
-                answer = data.get("response", "").strip()
-                
-                # Clean up the response - remove any continuation of fake dialogue
-                stop_markers = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
-                for marker in stop_markers:
-                    if marker in answer:
-                        answer = answer.split(marker)[0].strip()
-                
-                # Remove leading AI:/Asker:/Assistant: prefixes (case insensitive)
-                while True:
-                    cleaned = answer
-                    for prefix in ["AI:", "Asker:", "Assistant:", "Answer:", "Response:"]:
-                        if answer.lower().startswith(prefix.lower()):
-                            answer = answer[len(prefix):].strip()
-                            break
-                    if cleaned == answer:  # No change, we're done
-                        break
+                answer = clean_llm_text(data.get("response", "").strip())
                 
                 # CRITICAL: Validate output before returning
                 is_safe, validated_answer, violation_category = validate_output(answer)
