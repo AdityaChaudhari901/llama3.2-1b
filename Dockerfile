@@ -51,13 +51,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
-# Pre-pull the model at build time to avoid download delays at runtime
-RUN ollama serve & \
-    pid=$! && \
-    sleep 5 && \
-    ollama pull phi3:mini && \
-    kill $pid && \
-    wait $pid 2>/dev/null || true
+# Model will be pulled at runtime by start.sh to avoid OOM killer during Kaniko build
 
 # Startup script
 COPY start.sh .
