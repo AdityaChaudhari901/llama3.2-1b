@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.getenv("MODEL", "tinyllama:1.1b")
+MODEL = os.getenv("MODEL", "phi3:mini")
 # Comma-separated list of allowed CORS origins (set in .env for production)
 ALLOWED_ORIGINS = [
     o.strip()
@@ -309,7 +309,7 @@ def clean_llm_text(text: str) -> str:
             break
     return text
 
-# AI Personality - Optimized for TinyLlama
+# AI Personality - Optimized for Phi-3 Mini
 SYSTEM_PERSONALITY = os.getenv(
     "AI_PERSONALITY",
     "Answer directly with specific facts, names, and examples. Do not repeat the question."
@@ -500,7 +500,7 @@ async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
     
     personality = payload.personality or SYSTEM_PERSONALITY
-    # Cap personality length — TinyLlama can't handle long system prompts
+    # Cap personality length — Phi-3 Mini might not handle excessively long system prompts well
     if len(personality) > 200:
         personality = personality[:200].rsplit('.', 1)[0] + '.'
     

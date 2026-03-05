@@ -41,7 +41,7 @@ COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment
 ENV PORT=8080 \
-    MODEL=tinyllama:1.1b \
+    MODEL=phi3:mini \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 
@@ -55,7 +55,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
 RUN ollama serve & \
     pid=$! && \
     sleep 5 && \
-    ollama pull tinyllama:1.1b && \
+    ollama pull phi3:mini && \
     kill $pid && \
     wait $pid 2>/dev/null || true
 

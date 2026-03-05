@@ -93,7 +93,7 @@ export default function App() {
     const isHome = messages.length === 0
 
     // Personality presets
-    // Personality presets (short for TinyLlama compatibility)
+    // Personality presets (short for Phi-3 Mini compatibility)
     const personalities = {
         helpful: 'You are a helpful assistant. Answer clearly and accurately.',
         creative: 'You are a creative assistant. Give imaginative and original answers.',
@@ -135,7 +135,7 @@ export default function App() {
             const res = await fetch(`${API_URL}/ask`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     question,
                     personality: personality === 'custom' ? customPrompt : personalities[personality]
                 }),
@@ -202,8 +202,8 @@ export default function App() {
     return (
         <div className="app">
             {/* Settings button - top left */}
-            <button 
-                className="settings-btn" 
+            <button
+                className="settings-btn"
                 onClick={() => setShowSettings(true)}
                 title="Settings"
             >
@@ -243,11 +243,11 @@ export default function App() {
                                     </button>
                                 ))}
                             </div>
-                            
+
                             <div className="custom-section">
                                 <div className="custom-section__header">
                                     <h3>Custom Instructions</h3>
-                                    <button 
+                                    <button
                                         className={`custom-toggle ${personality === 'custom' ? 'custom-toggle--active' : ''}`}
                                         onClick={() => setPersonality('custom')}
                                     >
