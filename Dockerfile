@@ -55,8 +55,10 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=5 \
 # OLLAMA_NO_KEYGEN prevents SSH identity keys being baked into the image
 RUN OLLAMA_NO_KEYGEN=true ollama serve & \
     pid=$! && \
-    sleep 8 && \
-    rm -rf /root/.ollama/models && \
+    echo "Waiting for Ollama to be ready..." && \
+    for i in $(seq 1 30); do \
+        curl -s http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && echo "Ollama ready after ${i}s" && break || sleep 1; \
+    done && \
     ollama pull qwen2.5:1.5b && \
     kill $pid && \
     wait $pid 2>/dev/null || true && \
