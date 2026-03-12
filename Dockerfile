@@ -41,7 +41,7 @@ COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment
 ENV PORT=8080 \
-    MODEL=llama3.2:3b \
+    MODEL=qwen2.5:1.5b \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 
@@ -52,11 +52,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
 # Pre-pull the model at build time so container starts immediately
-# (llama3.2:3b is ~2GB — pulling at runtime causes health deadline failures)
+# (qwen2.5:1.5b is ~1GB — pulling at runtime causes health deadline failures)
 RUN ollama serve & \
     pid=$! && \
     sleep 8 && \
-    ollama pull llama3.2:3b && \
+    ollama pull qwen2.5:1.5b && \
     kill $pid && \
     wait $pid 2>/dev/null || true
 
