@@ -22,14 +22,13 @@ for i in {1..15}; do
   sleep 2
 done
 
-# Pull model in the background so FastAPI can start immediately
-# and pass Boltic's health check before the 5-minute deadline
-echo "Checking model $MODEL..."
+# Model is pre-pulled at build time, just verify it exists
+echo "Verifying model $MODEL..."
 if ollama list | grep -q "$MODEL"; then
-  echo "✅ Model $MODEL is already available!"
+  echo "✅ Model $MODEL is ready!"
 else
-  echo "⏳ Model not found — pulling $MODEL in background (this may take a few minutes)..."
-  ollama pull $MODEL &
+  echo "⚠️  Model not found in image, pulling now (this may take a few minutes)..."
+  ollama pull $MODEL
 fi
 
 echo "Starting FastAPI app on port $PORT..."

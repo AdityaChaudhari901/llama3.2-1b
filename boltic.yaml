@@ -2,7 +2,7 @@ version: "1"
 
 service:
   name: ollama-ai-assistant
-  description: "Ollama Phi-3 Mini AI Assistant — React frontend + FastAPI backend"
+  description: "Ollama Llama 3.2 3B AI Assistant — React frontend + FastAPI backend"
 
 build:
   context: .

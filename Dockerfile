@@ -40,18 +40,25 @@ COPY Backend/app.py .
 COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment
-ENV PORT=7860 \
+ENV PORT=8080 \
     MODEL=llama3.2:3b \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 
 
-EXPOSE 7860
+EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
-# Model will be pulled at runtime by start.sh to avoid OOM killer during Kaniko build
+# Pre-pull the model at build time so container starts immediately
+# (llama3.2:3b is ~2GB — pulling at runtime causes health deadline failures)
+RUN ollama serve & \
+    pid=$! && \
+    sleep 8 && \
+    ollama pull llama3.2:3b && \
+    kill $pid && \
+    wait $pid 2>/dev/null || true
 
 # Startup script
 COPY start.sh .

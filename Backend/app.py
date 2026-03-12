@@ -436,7 +436,13 @@ def validate_output(text: str) -> tuple[bool, str, str]:
 @app.post("/generate")
 async def generate(payload: GenerateIn):
     logger.info(f"Generate request: {payload.prompt[:50]}...")
-    
+
+    if not _is_model_ready():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model '{MODEL}' is still loading, please wait a moment and try again."
+        )
+
     body = {
         "model": MODEL,
         "prompt": payload.prompt,
@@ -498,9 +504,15 @@ async def generate(payload: GenerateIn):
 @app.post("/ask")
 async def ask(payload: AskIn):
     logger.info(f"Ask request: {payload.question[:50]}...")
-    
+
+    if not _is_model_ready():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model '{MODEL}' is still loading, please wait a moment and try again."
+        )
+
     personality = payload.personality or SYSTEM_PERSONALITY
-    # Cap personality length — Phi-3 Mini might not handle excessively long system prompts well
+    # Cap personality length to avoid issues with long system prompts
     if len(personality) > 200:
         personality = personality[:200].rsplit('.', 1)[0] + '.'
     
