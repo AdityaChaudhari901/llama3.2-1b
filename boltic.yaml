@@ -1,39 +1,64 @@
-version: "1"
-
-service:
-  name: ollama-ai-assistant
-  description: "Ollama Gemma4 31B AI Assistant — React frontend + FastAPI backend"
-
 build:
-  context: .
-  dockerfile: Dockerfile
-
+    context: .
+    dockerfile: Dockerfile
 deploy:
-  port: 8080
-  minInstances: 1
-  maxInstances: 1
-  resources:
-    cpu: "16"
-    memory: "32Gi"
-
+    maxInstances: 1
+    minInstances: 1
+    port: 8080
+    resources:
+        cpu: "16"
+        memory: 32Gi
 environment:
-  - name: PORT
-    value: "8080"
-  - name: MODEL
-    value: "gemma4:31b"
-  - name: OLLAMA_HOST
-    value: "127.0.0.1:11434"
-  - name: PYTHONUNBUFFERED
-    value: "1"
-  - name: OLLAMA_FLASH_ATTENTION
-    value: "1"
-  - name: OLLAMA_KEEP_ALIVE
-    value: "0"
-  - name: GOMEMLIMIT
-    value: "28000MiB"
-  # Override Ollama's internal free memory check (which fails on Serverless)
-  - name: OLLAMA_MAX_VRAM
-    value: "30064771072" # 28GB in bytes
-  # Force pure CPU computation (avoids crashing on missing AVX instructions in serverless VM)
-  - name: OLLAMA_LLM_LIBRARY
-    value: "cpu"
+    - name: PORT
+      value: "8080"
+    - name: MODEL
+      value: gemma4:31b
+    - name: OLLAMA_HOST
+      value: 127.0.0.1:11434
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: OLLAMA_FLASH_ATTENTION
+      value: "1"
+    - name: OLLAMA_KEEP_ALIVE
+      value: "0"
+    - name: GOMEMLIMIT
+      value: 28000MiB
+    - name: OLLAMA_MAX_VRAM
+      value: "30064771072"
+    - name: OLLAMA_LLM_LIBRARY
+      value: cpu
+serverlessConfig:
+    Env:
+        APPLICATION_ENV_PREFIX: BOLT
+        BOLT_APPLICATION_ACCOUNT_ID: b274cb0b-f8b2-4aac-b79f-71eb7d2e3fe5
+        BOLT_APPLICATION_AUTO_STOP: "false"
+        BOLT_APPLICATION_CODE_TYPE: ""
+        BOLT_APPLICATION_LANGUAGE: python/3.11
+        BOLT_APPLICATION_MAX_IDLE_TIME: "300"
+        BOLT_APPLICATION_NAME: llama Qwen
+        BOLT_APPLICATION_ORG_ID: b274cb0b-f8b2-4aac-b79f-71eb7d2e3fe5
+        BOLT_APPLICATION_PORT: "8080"
+        BOLT_APPLICATION_PROTOCOL: http
+        BOLT_APPLICATION_REGION_ID: asia-south1
+        BOLT_APPLICATION_RUNTIME: git
+        BOLT_APPLICATION_SLUG: llama-qwen
+        BOLT_APPLICATION_VERSION: "0"
+    PortMap:
+        - Protocol: http
+          Port: 8080
+          Name: http
+    Scaling:
+        AutoStop: false
+        Min: 6
+        Max: 10
+        MaxIdleTime: 300
+    Resources:
+        CPU: 1
+        MemoryMB: 2048
+        MemoryMaxMB: 2048
+        DiskMB: 100
+    Timeout: 60
+service:
+    description: Ollama Gemma4 31B AI Assistant — React frontend + FastAPI backend
+    name: ollama-ai-assistant
+version: "1"
