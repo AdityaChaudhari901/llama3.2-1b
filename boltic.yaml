@@ -36,6 +36,10 @@ environment:
     # Halves KV-cache memory — allows larger context or more parallel slots
     - name: OLLAMA_KV_CACHE_TYPE
       value: "q8_0"
+    # mmap loads model weights from disk on demand — critical when container RAM
+    # is constrained. Avoids the "model requires more system memory" 500 error.
+    - name: OLLAMA_USE_MMAP
+      value: "1"
 serverlessConfig:
     Env:
         APPLICATION_ENV_PREFIX: BOLT
