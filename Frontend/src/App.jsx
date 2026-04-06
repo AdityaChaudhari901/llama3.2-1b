@@ -56,7 +56,6 @@ const CloseIcon = () => (
     </svg>
 )
 
-
 function TypingDots() {
     return (
         <span className="typing-dots">
@@ -72,36 +71,37 @@ function Message({ msg }) {
                 {msg.role === 'user' ? <UserIcon /> : <BotIcon />}
             </div>
             <div className="message__bubble">
-                {msg.loading ? <TypingDots /> : <span className="message__text">{msg.content}</span>}
+                {msg.loading
+                    ? <TypingDots />
+                    : <span className="message__text">{msg.content}</span>
+                }
             </div>
         </div>
     )
 }
 
 export default function App() {
-    const [input, setInput] = useState('')
-    const [messages, setMessages] = useState([])
-    const [loading, setLoading] = useState(false)
+    const [input, setInput]               = useState('')
+    const [messages, setMessages]         = useState([])
+    const [loading, setLoading]           = useState(false)
     const [showSettings, setShowSettings] = useState(false)
-    const [personality, setPersonality] = useState('helpful')
+    const [personality, setPersonality]   = useState('helpful')
     const [customPrompt, setCustomPrompt] = useState('You are a helpful AI assistant.')
     const textareaRef = useRef(null)
-    const bottomRef = useRef(null)
-    const abortRef = useRef(null)
-    const fileRef = useRef(null)
+    const bottomRef   = useRef(null)
+    const abortRef    = useRef(null)
+    const fileRef     = useRef(null)
 
     const isHome = messages.length === 0
 
-    // Personality presets
-    // Personality presets (short for Phi-3 Mini compatibility)
     const personalities = {
-        helpful: 'You are a helpful assistant. Answer clearly and accurately.',
-        creative: 'You are a creative assistant. Give imaginative and original answers.',
-        technical: 'You are a technical assistant. Give precise, detailed explanations with correct terminology.',
-        casual: 'You are a casual, friendly assistant. Use simple, natural language.',
+        helpful:      'You are a helpful assistant. Answer clearly and accurately.',
+        creative:     'You are a creative assistant. Give imaginative and original answers.',
+        technical:    'You are a technical assistant. Give precise, detailed explanations with correct terminology.',
+        casual:       'You are a casual, friendly assistant. Use simple, natural language.',
         professional: 'You are a professional assistant. Give structured, concise, business-focused answers.',
-        custom: customPrompt,
-    };
+        custom:       customPrompt,
+    }
 
     // Auto-resize textarea
     useEffect(() => {
@@ -111,7 +111,7 @@ export default function App() {
         ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
     }, [input])
 
-    // Scroll to bottom on new message
+    // Scroll to bottom on new message / new token
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [messages])
@@ -123,8 +123,8 @@ export default function App() {
         setInput('')
         setMessages(prev => [
             ...prev,
-            { role: 'user', content: question, id: Date.now() },
-            { role: 'assistant', content: '', loading: true, id: Date.now() + 1 },
+            { role: 'user',      content: question, id: Date.now() },
+            { role: 'assistant', content: '',        id: Date.now() + 1, loading: true },
         ])
         setLoading(true)
 
@@ -132,27 +132,101 @@ export default function App() {
             const controller = new AbortController()
             abortRef.current = controller
 
-            const res = await fetch(`${API_URL}/ask`, {
+            const res = await fetch(`${API_URL}/ask/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     question,
-                    personality: personality === 'custom' ? customPrompt : personalities[personality]
+                    personality: personality === 'custom'
+                        ? customPrompt
+                        : personalities[personality],
                 }),
                 signal: controller.signal,
             })
 
             if (!res.ok) {
-                const error = await res.json().catch(() => ({}))
-                throw new Error(error.error || error.detail || `Server error ${res.status}`)
+                const err = await res.json().catch(() => ({}))
+                throw new Error(err.error || err.detail || `Server error ${res.status}`)
             }
-            const data = await res.json()
 
-            setMessages(prev => {
-                const next = [...prev]
-                next[next.length - 1] = { role: 'assistant', content: data.answer, id: Date.now() + 2 }
-                return next
-            })
+            const reader  = res.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer    = ''
+            let firstToken = true
+
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+
+                buffer += decoder.decode(value, { stream: true })
+                const lines = buffer.split('\n')
+                buffer = lines.pop() ?? ''   // keep incomplete line for next chunk
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue
+                    let event
+                    try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+                    if (event.type === 'token' && event.content) {
+                        if (firstToken) {
+                            // Drop the loading spinner on first real token
+                            firstToken = false
+                            setMessages(prev => {
+                                const next = [...prev]
+                                next[next.length - 1] = {
+                                    ...next[next.length - 1],
+                                    loading: false,
+                                    content: event.content,
+                                }
+                                return next
+                            })
+                        } else {
+                            setMessages(prev => {
+                                const next = [...prev]
+                                const last = next[next.length - 1]
+                                next[next.length - 1] = {
+                                    ...last,
+                                    content: last.content + event.content,
+                                }
+                                return next
+                            })
+                        }
+
+                    } else if (event.type === 'blocked') {
+                        // Safety refusal — replace streamed content with the refusal message
+                        setMessages(prev => {
+                            const next = [...prev]
+                            next[next.length - 1] = {
+                                ...next[next.length - 1],
+                                content: event.refusal,
+                                loading: false,
+                            }
+                            return next
+                        })
+
+                    } else if (event.type === 'error') {
+                        setMessages(prev => {
+                            const next = [...prev]
+                            next[next.length - 1] = {
+                                ...next[next.length - 1],
+                                content: event.message,
+                                loading: false,
+                            }
+                            return next
+                        })
+
+                    } else if (event.type === 'done') {
+                        // Generation finished successfully — ensure loading flag is off
+                        setMessages(prev => {
+                            const next = [...prev]
+                            next[next.length - 1] = { ...next[next.length - 1], loading: false }
+                            return next
+                        })
+                    }
+                }
+            }
+
         } catch (err) {
             if (err.name === 'AbortError') return
             const errorMsg = err.message || 'Could not reach the server. Check the backend is running.'
@@ -161,6 +235,7 @@ export default function App() {
                 next[next.length - 1] = {
                     role: 'assistant',
                     content: errorMsg,
+                    loading: false,
                     id: Date.now() + 3,
                 }
                 return next
@@ -196,24 +271,20 @@ export default function App() {
         const names = files.map(f => f.name).join(', ')
         setInput(prev => (prev ? prev + ' ' : '') + `[${names}]`)
         textareaRef.current?.focus()
-        e.target.value = '' // reset so same file can be picked again
+        e.target.value = ''
     }
 
     return (
         <div className="app">
-            {/* Settings button - top left */}
-            <button
-                className="settings-btn"
-                onClick={() => setShowSettings(true)}
-                title="Settings"
-            >
+            {/* Settings button */}
+            <button className="settings-btn" onClick={() => setShowSettings(true)} title="Settings">
                 <SettingsIcon />
             </button>
 
             {/* Settings Modal */}
             {showSettings && (
                 <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-                    <div className="modal" onClick={(e) => e.stopPropagation()}>
+                    <div className="modal" onClick={e => e.stopPropagation()}>
                         <div className="modal__header">
                             <h2>AI Personality</h2>
                             <button className="modal__close" onClick={() => setShowSettings(false)}>
@@ -229,10 +300,7 @@ export default function App() {
                                     <button
                                         key={key}
                                         className={`personality-card ${personality === key ? 'personality-card--active' : ''}`}
-                                        onClick={() => {
-                                            setPersonality(key)
-                                            setShowSettings(false)
-                                        }}
+                                        onClick={() => { setPersonality(key); setShowSettings(false) }}
                                     >
                                         <div className="personality-card__name">
                                             {key.charAt(0).toUpperCase() + key.slice(1)}
@@ -260,7 +328,7 @@ export default function App() {
                                 <textarea
                                     className="custom-textarea"
                                     value={customPrompt}
-                                    onChange={(e) => setCustomPrompt(e.target.value)}
+                                    onChange={e => setCustomPrompt(e.target.value)}
                                     placeholder="Enter your custom instructions here..."
                                     rows={4}
                                 />
@@ -274,18 +342,12 @@ export default function App() {
             <main className={`main ${isHome ? 'main--home' : 'main--chat'}`}>
                 {isHome ? (
                     <div className="home">
-                        <img
-                            src="/logo.png"
-                            alt="Logo"
-                            className="home__logo"
-                        />
+                        <img src="/logo.png" alt="Logo" className="home__logo" />
                         <h1 className="home__heading">What can I do for you?</h1>
                     </div>
                 ) : (
                     <div className="chat">
-                        {messages.map(msg => (
-                            <Message key={msg.id} msg={msg} />
-                        ))}
+                        {messages.map(msg => <Message key={msg.id} msg={msg} />)}
                         <div ref={bottomRef} />
                     </div>
                 )}
@@ -293,7 +355,6 @@ export default function App() {
                 {/* Input area */}
                 <div className={`composer-wrap ${isHome ? 'composer-wrap--home' : 'composer-wrap--bottom'}`}>
                     <div className="composer">
-                        {/* Textarea */}
                         <textarea
                             ref={textareaRef}
                             className="composer__input"
@@ -303,11 +364,8 @@ export default function App() {
                             onKeyDown={handleKeyDown}
                             rows={1}
                         />
-
-                        {/* Bottom toolbar */}
                         <div className="composer__toolbar">
                             <div className="composer__toolbar-left">
-                                {/* Hidden file input */}
                                 <input
                                     ref={fileRef}
                                     type="file"
@@ -315,11 +373,7 @@ export default function App() {
                                     style={{ display: 'none' }}
                                     onChange={handleFileChange}
                                 />
-                                <button
-                                    className="icon-btn"
-                                    title="Attach file"
-                                    onClick={() => fileRef.current?.click()}
-                                >
+                                <button className="icon-btn" title="Attach file" onClick={() => fileRef.current?.click()}>
                                     <PlusIcon />
                                 </button>
                             </div>
@@ -341,7 +395,6 @@ export default function App() {
                             </div>
                         </div>
                     </div>
-
                 </div>
             </main>
         </div>

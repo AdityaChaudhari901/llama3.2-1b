@@ -4,25 +4,30 @@ import re
 import logging
 import asyncio
 import time
+import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 import uvicorn
 
-# Configure logging
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-PORT = int(os.getenv("PORT", "8080"))
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.getenv("MODEL", "gemma4:31b")
+# ── Config ────────────────────────────────────────────────────────────────────
+PORT              = int(os.getenv("PORT", "8080"))
+OLLAMA_URL        = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+MODEL             = os.getenv("MODEL", "gemma3:27b")
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "4"))
+NUM_THREADS       = int(os.getenv("OLLAMA_NUM_THREADS", "14"))
+
 # Comma-separated list of allowed CORS origins (set in .env for production)
 ALLOWED_ORIGINS = [
     o.strip()
@@ -30,10 +35,9 @@ ALLOWED_ORIGINS = [
     if o.strip()
 ]
 
-# Guardrails Configuration
 MAX_INPUT_LENGTH = 2000
 
-# Prompt injection patterns
+# ── Prompt injection patterns ─────────────────────────────────────────────────
 INJECTION_PATTERNS = [
     r"ignore\s+previous\s+instructions",
     r"ignore\s+all\s+instructions",
@@ -53,7 +57,7 @@ INJECTION_PATTERNS = [
     r"sudo\s+mode",
 ]
 
-# ── S1: Violent Crimes ──────────────────────────────────────────────────────
+# ── S1: Violent Crimes ────────────────────────────────────────────────────────
 S1_VIOLENT_CRIMES = [
     r"\b(kill|murder|assassinate|execute)\s+(someone|people|person|him|her|them)\b",
     r"\b(hurt|harm|injure|attack|beat|stab|shoot)\s+(someone|people|person|him|her|my\s+\w+|them)\b",
@@ -65,7 +69,6 @@ S1_VIOLENT_CRIMES = [
     r"how\s+to\s+(commit|carry\s+out)\s+(a\s+)?(murder|assault|attack|kidnapping)\b",
     r"\b(serial\s+killer|hitman|contract\s+kill)\b",
     r"plan\s+(to\s+)?(kill|murder|attack|harm)\s+(someone|a\s+person|people)\b",
-    # ── Arson / fire attacks ──
     r"\b(arson|arsonist|firebomb|fire.?bomb|molotov)\b",
     r"how\s+to\s+(blast|blow\s+up|destroy|burn\s+down|torch|set\s+(fire|alight)\s+to)\s+(a\s+)?(car|vehicle|building|house|property|bus|truck)\b",
     r"\b(blast|blow\s+up)\s+(a\s+)?(car|vehicle|building|house|property)\b",
@@ -99,7 +102,7 @@ S3_SEX_CRIMES = [
     r"how\s+to\s+(film|record)\s+someone\s+(without|secretly).{0,30}(naked|sex|nude)\b",
 ]
 
-# ── S4: Child Sexual Exploitation ────────────────────────────────────────────
+# ── S4: Child Sexual Exploitation ─────────────────────────────────────────────
 S4_CHILD_SAFETY = [
     r"\b(child|minor|underage|kid|teen).{0,50}(sexual|explicit|porn|nude|naked|erotic)\b",
     r"\b(pedophile|pedophilia|child\s+sexual\s+abuse|csam|csem)\b",
@@ -117,7 +120,7 @@ S5_DEFAMATION = [
     r"(create|write|generate)\s+(fake|false)\s+(accusation|allegation).{0,30}(against|about)\b",
 ]
 
-# ── S6: Specialized Advice (dangerous substances & illegal drugs) ─────────────
+# ── S6: Specialized Advice ────────────────────────────────────────────────────
 S6_SPECIALIZED_ADVICE = [
     r"how\s+to\s+(make|build|create|synthesize|produce)\s+(poison|toxin|venom|ricin|sarin|vx\s+gas|nerve\s+agent)\b",
     r"\b(poison|toxic|lethal)\s+(dose|amount|quantity).{0,30}(kill|harm|hurt|injure|murder)\b",
@@ -149,7 +152,7 @@ S8_IP = [
     r"how\s+to\s+(sell|distribute)\s+(pirated|cracked|stolen)\s+(software|content|movies?|music)\b",
 ]
 
-# ── S9: Indiscriminate Weapons (CBRN + illegal firearms) ──────────────────────
+# ── S9: Indiscriminate Weapons ────────────────────────────────────────────────
 S9_WEAPONS = [
     r"\b(bomb|explosive|detonate|c4|dynamite|grenade|ied|pipe\s+bomb|landmine|claymore)\b",
     r"how\s+to\s+(make|build|create|assemble|construct)\s+(a\s+)?(bomb|explosive|grenade|ied|pipe\s+bomb|landmine)\b",
@@ -195,7 +198,6 @@ S12_SEXUAL = [
     r"(generate|create|write|make).{0,20}(nude|naked|topless|explicit)\s+(image|photo|picture|description)\b",
 ]
 
-# Category mapping — all 12 hazard categories
 PATTERN_CATEGORIES = {
     'S1_violent_crimes':     S1_VIOLENT_CRIMES,
     'S2_nonviolent_crimes':  S2_NONVIOLENT_CRIMES,
@@ -211,7 +213,6 @@ PATTERN_CATEGORIES = {
     'S12_sexual':            S12_SEXUAL,
 }
 
-# Safe refusal templates
 REFUSAL_TEMPLATES = {
     "S1_violent_crimes": (
         "I can't help with requests that involve violent crimes or harming others. "
@@ -272,9 +273,8 @@ REFUSAL_TEMPLATES = {
     ),
 }
 
-# ── Shared input validator ────────────────────────────────────────────────────
+# ── Input validator ───────────────────────────────────────────────────────────
 def validate_input(text: str) -> str:
-    """Single source-of-truth validator for all user-supplied text fields."""
     if not text or not text.strip():
         raise ValueError("Input cannot be empty")
     if len(text) > MAX_INPUT_LENGTH:
@@ -286,16 +286,15 @@ def validate_input(text: str) -> str:
     for category, patterns in PATTERN_CATEGORIES.items():
         for pattern in patterns:
             if re.search(pattern, text, re.IGNORECASE):
-                logger.warning(f"Harmful content detected - Category: {category}, Input: {text[:100]}...")
+                logger.warning(f"Harmful content [{category}]: {text[:100]}...")
                 raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
     return text.strip()
 
-# ── Shared LLM output cleaner ─────────────────────────────────────────────────
-_STOP_MARKERS = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
+# ── LLM output cleaner ────────────────────────────────────────────────────────
+_STOP_MARKERS   = ["\nUser:", "\nQuestion:", "\n\nUser:", "\n\nQuestion:", "\nAI:", "\nAsker:"]
 _LEADING_PREFIXES = ["AI:", "Asker:", "Assistant:", "Answer:", "Response:"]
 
 def clean_llm_text(text: str) -> str:
-    """Strip fake-dialogue continuations and leading role-prefixes from LLM output."""
     for marker in _STOP_MARKERS:
         if marker in text:
             text = text.split(marker)[0].strip()
@@ -309,12 +308,50 @@ def clean_llm_text(text: str) -> str:
             break
     return text
 
-# AI Personality - Optimized for Gemma4 31B
+# ── Output validator ──────────────────────────────────────────────────────────
+_HARMFUL_PHRASES = [
+    r"(?:drug|cocaine|heroin|meth).*(?:is a )?personal choice",
+    r"I can help you (?:make|create|build) (?:a bomb|weapon|explosive)",
+    r"here'?s?\s+how\s+to\s+(?:kill|murder|harm|blast|blow\s+up|burn|destroy|torch)",
+    r"you should (?:kill yourself|commit suicide|self[- ]?harm)",
+    r"step\s*\d+\.?.{0,80}(?:petrol|gasoline|fuel|accelerant|ignite|detonate|explode)",
+    r"(?:pour|splash|douse|add).{0,30}(?:petrol|gasoline|fuel).{0,30}(?:tank|car|engine)",
+    r"(?:blast|blow\s+up|torch|set\s+fire|burn\s+down).{0,30}(?:car|vehicle|building|house)",
+]
+
+def validate_output(text: str) -> tuple[bool, str, str | None]:
+    if not text or not text.strip():
+        return True, text, None
+    for category, patterns in PATTERN_CATEGORIES.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                logger.error(f"OUTPUT VIOLATION [{category}]: {text[:100]}...")
+                return False, REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']), category
+    for phrase in _HARMFUL_PHRASES:
+        if re.search(phrase, text, re.IGNORECASE):
+            logger.error(f"OUTPUT VIOLATION [harmful_phrase]: {text[:100]}...")
+            return False, REFUSAL_TEMPLATES['default'], 'harmful_phrase'
+    return True, text, None
+
+# ── Shared generation options tuned for gemma3:27b on 16-core CPU ─────────────
+def _base_options(temperature: float) -> dict:
+    return {
+        "temperature": temperature,
+        "top_p": 0.95,        # gemma3 recommended
+        "top_k": 64,          # gemma3 recommended
+        "num_predict": 1500,  # generous output budget for a 27B model
+        "num_ctx": 8192,      # safe with ~13GB KV budget (32GB - 17GB model - 2GB OS)
+        "num_thread": NUM_THREADS,  # CPU threads dedicated to inference
+        "stop": ["Question:", "User:", "Asker:"],
+    }
+
+# ── AI Personality ─────────────────────────────────────────────────────────────
 SYSTEM_PERSONALITY = os.getenv(
     "AI_PERSONALITY",
     "Answer directly with specific facts, names, and examples. Do not repeat the question."
 )
 
+# ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI()
 
 app.add_middleware(
@@ -325,53 +362,103 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+# ── Shared resources (created at startup) ────────────────────────────────────
+_http_client: httpx.AsyncClient | None = None
+_ollama_semaphore: asyncio.Semaphore | None = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    - Create a shared persistent HTTP client (connection pooling to Ollama).
+    - Create a semaphore that limits concurrent Ollama requests to OLLAMA_NUM_PARALLEL.
+    - Fire-and-forget warmup task to load the model into RAM before the first user request.
+    """
+    global _http_client, _ollama_semaphore
+    _http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=5.0),
+        limits=httpx.Limits(
+            max_connections=OLLAMA_NUM_PARALLEL + 4,
+            max_keepalive_connections=OLLAMA_NUM_PARALLEL,
+            keepalive_expiry=30,
+        ),
+    )
+    _ollama_semaphore = asyncio.Semaphore(OLLAMA_NUM_PARALLEL)
+    logger.info(f"HTTP client ready | semaphore={OLLAMA_NUM_PARALLEL} | threads={NUM_THREADS}")
+    asyncio.create_task(_warmup_model())
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if _http_client:
+        await _http_client.aclose()
+
+
+async def _warmup_model():
+    """
+    Send a minimal generation request so Ollama loads the model into RAM.
+    Retries every 10 s for up to ~3 min. Without this, the first real user
+    request pays the full cold-start cost of loading 17 GB from disk.
+    """
+    await asyncio.sleep(5)  # Give Ollama server a moment to initialize
+    for attempt in range(20):
+        try:
+            r = await _http_client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL,
+                    "prompt": "hi",
+                    "stream": False,
+                    "options": {"num_predict": 1, "num_ctx": 512, "num_thread": NUM_THREADS},
+                },
+            )
+            if r.status_code == 200:
+                logger.info("Model loaded into RAM and ready.")
+                return
+        except Exception as e:
+            logger.info(f"Warmup attempt {attempt + 1}/20: {e}")
+        await asyncio.sleep(10)
+    logger.warning("Model warmup timed out — will load on first request")
+
+
+# ── Validation error handler ──────────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Convert Pydantic validation errors to user-friendly messages"""
     errors = exc.errors()
     if errors:
-        # Get the first error message (usually the most relevant)
-        first_error = errors[0]
-        msg = first_error.get("msg", "Validation error")
-        
-        # Clean up the message - remove "Value error, " prefix if present
-        msg_str = str(msg)
-        if msg_str.startswith("Value error, "):
-            msg_str = msg_str.replace("Value error, ", "", 1)
-        
-        return JSONResponse(
-            status_code=400,
-            content={"error": msg_str}
-        )
-    
-    return JSONResponse(
-        status_code=422,
-        content={"error": "Invalid input"}
-    )
+        msg = str(errors[0].get("msg", "Validation error"))
+        if msg.startswith("Value error, "):
+            msg = msg.replace("Value error, ", "", 1)
+        return JSONResponse(status_code=400, content={"error": msg})
+    return JSONResponse(status_code=422, content={"error": "Invalid input"})
 
+
+# ── Request models ────────────────────────────────────────────────────────────
 class GenerateIn(BaseModel):
     prompt: str
     temperature: float | None = 0.7
-    
+
     @field_validator('prompt')
     @classmethod
     def validate_prompt(cls, v: str) -> str:
         return validate_input(v)
 
+
 class AskIn(BaseModel):
     question: str
     temperature: float | None = 0.7
     personality: str | None = None
-    
+
     @field_validator('question')
     @classmethod
     def validate_question(cls, v: str) -> str:
         return validate_input(v)
 
+
+# ── Model readiness (cached 5 s) ──────────────────────────────────────────────
 _model_ready_cache: dict = {"result": False, "expires": 0.0}
 
 def _is_model_ready() -> bool:
-    """Check if the model is fully loaded in Ollama (result cached for 5 s)."""
     now = time.monotonic()
     if now < _model_ready_cache["expires"]:
         return _model_ready_cache["result"]
@@ -379,8 +466,7 @@ def _is_model_ready() -> bool:
     try:
         r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.0)
         if r.status_code == 200:
-            models = r.json().get("models", [])
-            for m in models:
+            for m in r.json().get("models", []):
                 if m.get("name") == MODEL or m.get("name", "").startswith(MODEL):
                     result = True
                     break
@@ -390,213 +476,216 @@ def _is_model_ready() -> bool:
     _model_ready_cache["expires"] = now + 5.0
     return result
 
+
+# ── Health / Readiness ────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    """Always returns 200 — used by Boltic's liveness probe."""
     return {"ok": True, "model": MODEL, "model_ready": _is_model_ready()}
+
 
 @app.get("/ready")
 def ready():
-    """Poll this to know when you can start chatting."""
     return {"ready": _is_model_ready(), "model": MODEL}
 
-def validate_output(text: str) -> tuple[bool, str, str]:
-    """Validate model output for harmful content.
-    Returns: (is_safe, text_or_refusal, violation_category)
-    """
-    if not text or not text.strip():
-        return True, text, None
-    
-    # Check output against all harmful patterns
-    for category, patterns in PATTERN_CATEGORIES.items():
-        for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                logger.error(f"OUTPUT VIOLATION - Category: {category}, Text: {text[:100]}...")
-                return False, REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']), category
-    
-    # Check for common harmful phrases that might slip through
-    harmful_phrases = [
-        r"(?:drug|cocaine|heroin|meth).*(?:is a )?personal choice",
-        r"I can help you (?:make|create|build) (?:a bomb|weapon|explosive)",
-        r"here'?s?\s+how\s+to\s+(?:kill|murder|harm|blast|blow\s+up|burn|destroy|torch)",
-        r"you should (?:kill yourself|commit suicide|self[- ]?harm)",
-        # Catch numbered/step-by-step destructive instructions
-        r"step\s*\d+\.?.{0,80}(?:petrol|gasoline|fuel|accelerant|ignite|detonate|explode)",
-        r"(?:pour|splash|douse|add).{0,30}(?:petrol|gasoline|fuel).{0,30}(?:tank|car|engine)",
-        r"(?:blast|blow\s+up|torch|set\s+fire|burn\s+down).{0,30}(?:car|vehicle|building|house)",
-    ]
-    
-    for phrase in harmful_phrases:
-        if re.search(phrase, text, re.IGNORECASE):
-            logger.error(f"OUTPUT VIOLATION - Harmful phrase detected: {text[:100]}...")
-            return False, REFUSAL_TEMPLATES['default'], 'harmful_phrase'
-    
-    return True, text, None
 
+# ── /generate (raw, non-streaming) ───────────────────────────────────────────
 @app.post("/generate")
 async def generate(payload: GenerateIn):
-    logger.info(f"Generate request: {payload.prompt[:50]}...")
+    logger.info(f"Generate: {payload.prompt[:50]}...")
 
     if not _is_model_ready():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Model '{MODEL}' is still loading, please wait a moment and try again."
-        )
+        raise HTTPException(503, detail=f"Model '{MODEL}' is still loading.")
 
     body = {
         "model": MODEL,
         "prompt": payload.prompt,
         "stream": False,
-        "options": {
-            "temperature": payload.temperature,
-            "num_predict": 500,
-            "num_ctx": 4096,
-            "stop": ["Question:", "User:", "Asker:"],
-        },
+        "options": _base_options(payload.temperature),
     }
-    
-    # Retry logic for Ollama startup race conditions
-    max_retries = 3
-    retry_delay = 2
-    
+
+    max_retries, retry_delay = 3, 2
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
+            async with _ollama_semaphore:
+                r = await _http_client.post(f"{OLLAMA_URL}/api/generate", json=body)
                 r.raise_for_status()
                 result = r.json()
-                
-                # Clean up the response
                 response_text = clean_llm_text(result.get("response", "").strip())
-                
-                # Validate output before returning
                 is_safe, validated_text, violation_category = validate_output(response_text)
-                
                 if not is_safe:
-                    logger.error(f"Blocked unsafe output - Category: {violation_category}")
+                    logger.error(f"Blocked unsafe output [{violation_category}]")
                     response_text = validated_text
-                
-                if not response_text:
-                    response_text = "I apologize, but I couldn't generate a proper response."
-                
-                result["response"] = response_text
+                result["response"] = response_text or "I apologize, but I couldn't generate a proper response."
                 return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama HTTP error (attempt {attempt + 1}/{max_retries}): {e.response.status_code} - {e.response.text[:200]}")
+            logger.error(f"Ollama HTTP error (attempt {attempt+1}): {e.response.status_code}")
             if attempt < max_retries - 1 and e.response.status_code == 500:
-                logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=503, detail="Model service temporarily unavailable. Please try again.")
+            raise HTTPException(503, detail="Model service temporarily unavailable.")
         except httpx.RequestError as e:
-            logger.error(f"Ollama connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            logger.error(f"Ollama connection error (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.")
+            raise HTTPException(503, detail="Cannot connect to model service.")
         except Exception as e:
-            logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            logger.error(f"Unexpected error (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
+            raise HTTPException(500, detail="An unexpected error occurred.")
 
+
+# ── /ask (non-streaming, kept for backward compat) ───────────────────────────
 @app.post("/ask")
 async def ask(payload: AskIn):
-    logger.info(f"Ask request: {payload.question[:50]}...")
+    logger.info(f"Ask: {payload.question[:50]}...")
 
     if not _is_model_ready():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Model '{MODEL}' is still loading, please wait a moment and try again."
-        )
+        raise HTTPException(503, detail=f"Model '{MODEL}' is still loading.")
 
     personality = payload.personality or SYSTEM_PERSONALITY
-    # Cap personality length to avoid issues with long system prompts
-    if len(personality) > 200:
-        personality = personality[:200].rsplit('.', 1)[0] + '.'
-    
+    if len(personality) > 500:
+        personality = personality[:500].rsplit('.', 1)[0] + '.'
+
     body = {
         "model": MODEL,
         "system": personality,
         "prompt": payload.question,
         "stream": False,
-        "options": {
-            "temperature": payload.temperature,
-            "num_predict": 800,
-            "num_ctx": 4096,
-            "stop": ["Question:", "User:", "Asker:"],
-        },
+        "options": _base_options(payload.temperature),
     }
-    
-    # Retry logic for Ollama startup race conditions
-    max_retries = 3
-    retry_delay = 2
-    
+
+    max_retries, retry_delay = 3, 2
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                r = await client.post(f"{OLLAMA_URL}/api/generate", json=body)
+            async with _ollama_semaphore:
+                r = await _http_client.post(f"{OLLAMA_URL}/api/generate", json=body)
                 r.raise_for_status()
                 data = r.json()
                 answer = clean_llm_text(data.get("response", "").strip())
-                
-                # CRITICAL: Validate output before returning
                 is_safe, validated_answer, violation_category = validate_output(answer)
-                
                 if not is_safe:
-                    logger.error(f"Blocked unsafe output in /ask - Category: {violation_category}")
+                    logger.error(f"Blocked unsafe output [{violation_category}]")
                     answer = validated_answer
-                
-                if not answer:
-                    answer = "I apologize, but I couldn't generate a proper response."
-                
-                return {"answer": answer, "model": MODEL}
+                return {"answer": answer or "I apologize, but I couldn't generate a proper response.", "model": MODEL}
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama HTTP error (attempt {attempt + 1}/{max_retries}): {e.response.status_code} - {e.response.text[:200]}")
+            logger.error(f"Ollama HTTP error (attempt {attempt+1}): {e.response.status_code}")
             if attempt < max_retries - 1 and e.response.status_code == 500:
-                logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=503, detail="Model service temporarily unavailable. Please try again.")
+            raise HTTPException(503, detail="Model service temporarily unavailable.")
         except httpx.RequestError as e:
-            logger.error(f"Ollama connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            logger.error(f"Ollama connection error (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=503, detail="Cannot connect to model service. Please try again later.")
+            raise HTTPException(503, detail="Cannot connect to model service.")
         except Exception as e:
-            logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            logger.error(f"Unexpected error (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
-            raise HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
+            raise HTTPException(500, detail="An unexpected error occurred.")
 
-# Serve React frontend static files from dist/
-# IMPORTANT: Mount static files at the end so API routes take precedence
+
+# ── /ask/stream (SSE streaming — primary endpoint used by frontend) ───────────
+@app.post("/ask/stream")
+async def ask_stream(payload: AskIn):
+    """
+    Streams tokens back to the client as Server-Sent Events.
+    Event types:
+      {"type": "token",   "content": "..."}   — one or more tokens
+      {"type": "done"}                         — generation complete, content is safe
+      {"type": "blocked", "refusal": "..."}    — output violated safety rules; replace UI content
+      {"type": "error",   "message": "..."}    — upstream failure
+    """
+    logger.info(f"Stream: {payload.question[:50]}...")
+
+    if not _is_model_ready():
+        raise HTTPException(503, detail=f"Model '{MODEL}' is still loading.")
+
+    personality = payload.personality or SYSTEM_PERSONALITY
+    if len(personality) > 500:
+        personality = personality[:500].rsplit('.', 1)[0] + '.'
+
+    body = {
+        "model": MODEL,
+        "system": personality,
+        "prompt": payload.question,
+        "stream": True,
+        "options": _base_options(payload.temperature),
+    }
+
+    async def event_stream():
+        full_text = ""
+        try:
+            async with _ollama_semaphore:
+                async with _http_client.stream("POST", f"{OLLAMA_URL}/api/generate", json=body) as r:
+                    r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        token = chunk.get("response", "")
+                        done  = chunk.get("done", False)
+
+                        if token:
+                            full_text += token
+                            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+                        if done:
+                            is_safe, _, category = validate_output(full_text)
+                            if not is_safe:
+                                refusal = REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default'])
+                                logger.error(f"Stream output blocked [{category}]")
+                                yield f"data: {json.dumps({'type': 'blocked', 'refusal': refusal})}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                            return
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Stream HTTP error: {e.response.status_code}")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Model service temporarily unavailable.'})}\n\n"
+        except httpx.RequestError as e:
+            logger.error(f"Stream connection error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to model service.'})}\n\n"
+        except Exception as e:
+            logger.error(f"Stream unexpected error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'An unexpected error occurred.'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # Prevent nginx from buffering the SSE stream
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── Static frontend ───────────────────────────────────────────────────────────
 _dist = Path(__file__).parent / "dist"
 if _dist.exists():
-    # Mount static assets directory
     app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
-    
-    # Serve index.html for root path
+
     @app.get("/", include_in_schema=False)
     async def serve_root():
-        """Serve the React app at root"""
         return FileResponse(_dist / "index.html")
-    
-    # Mount root level static files (logo.png, favicon, etc)
+
     @app.get("/{filename}", include_in_schema=False)
     async def serve_static_files(filename: str):
-        """Serve static files from dist root (logo.png, etc)"""
         file_path = _dist / filename
-        # Only serve if it's an actual file (not a directory or non-existent)
         if file_path.is_file() and file_path.name != "index.html":
             return FileResponse(file_path)
-        # Otherwise serve index.html for SPA routing
         return FileResponse(_dist / "index.html")
+
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
