@@ -12,30 +12,25 @@ environment:
     - name: PORT
       value: "8080"
     - name: MODEL
-      value: "gemma3:27b"
+      value: gemma3:27b
     - name: OLLAMA_HOST
-      value: "127.0.0.1:11434"
+      value: 127.0.0.1:11434
     - name: PYTHONUNBUFFERED
       value: "1"
-    # ── Concurrency ────────────────────────────────────────────────────────────
     - name: OLLAMA_NUM_PARALLEL
       value: "4"
     - name: OLLAMA_NUM_THREADS
       value: "14"
-    # ── Memory management ──────────────────────────────────────────────────────
     - name: GOMEMLIMIT
-      value: "28000MiB"
+      value: 28000MiB
     - name: OLLAMA_MAX_VRAM
       value: "30064771072"
     - name: OLLAMA_LLM_LIBRARY
-      value: "cpu"
-    # ── Model lifecycle ────────────────────────────────────────────────────────
-    # CRITICAL: keep model in RAM forever — "0" causes reload on every request
+      value: cpu
     - name: OLLAMA_KEEP_ALIVE
       value: "-1"
     - name: OLLAMA_MAX_LOADED_MODELS
       value: "1"
-    # ── Performance ────────────────────────────────────────────────────────────
     - name: OLLAMA_FLASH_ATTENTION
       value: "1"
 serverlessConfig:
@@ -64,12 +59,12 @@ serverlessConfig:
         Max: 10
         MaxIdleTime: 300
     Resources:
-        CPU: 16
-        MemoryMB: 32768
-        MemoryMaxMB: 32768
+        CPU: 1
+        MemoryMB: 2048
+        MemoryMaxMB: 2048
         DiskMB: 100
     Timeout: 60
 service:
-    description: "Ollama Gemma3 27B AI Assistant — React frontend + FastAPI backend"
+    description: Ollama Gemma3 27B AI Assistant — React frontend + FastAPI backend
     name: ollama-ai-assistant
 version: "1"
