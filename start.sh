@@ -31,10 +31,10 @@ if [ "$OLLAMA_READY" = "false" ]; then
   echo "⚠️  Ollama did not respond in 150 s — continuing anyway so FastAPI can start."
 fi
 
-# Remove any models that are NOT qwen2.5:1.5b (best-effort, never fatal)
-echo "Removing any non-qwen models..."
+# Remove any models that are NOT gemma4:31b (best-effort, never fatal)
+echo "Removing any non-gemma4 models..."
 for model in $(ollama list 2>/dev/null | awk 'NR>1 {print $1}'); do
-  if [[ "$model" != *"qwen2.5:1.5b"* ]]; then
+  if [[ "$model" != *"gemma4:31b"* ]]; then
     echo "🗑️  Removing $model..."
     ollama rm "$model" 2>/dev/null || true
   fi

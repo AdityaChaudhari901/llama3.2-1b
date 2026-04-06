@@ -2,7 +2,7 @@ version: "1"
 
 service:
   name: ollama-ai-assistant
-  description: "Ollama Qwen2.5 1.5B AI Assistant — React frontend + FastAPI backend"
+  description: "Ollama Gemma4 31B AI Assistant — React frontend + FastAPI backend"
 
 build:
   context: .
@@ -13,14 +13,14 @@ deploy:
   minInstances: 1
   maxInstances: 1
   resources:
-    cpu: "1"
-    memory: "2Gi"
+    cpu: "16"
+    memory: "32Gi"
 
 environment:
   - name: PORT
     value: "8080"
   - name: MODEL
-    value: "qwen2.5:1.5b"
+    value: "gemma4:31b"
   - name: OLLAMA_HOST
     value: "127.0.0.1:11434"
   - name: PYTHONUNBUFFERED
@@ -30,10 +30,10 @@ environment:
   - name: OLLAMA_KEEP_ALIVE
     value: "0"
   - name: GOMEMLIMIT
-    value: "1800MiB"
+    value: "28000MiB"
   # Override Ollama's internal free memory check (which fails on Serverless)
   - name: OLLAMA_MAX_VRAM
-    value: "1073741824" # 1GB in bytes
+    value: "30064771072" # 28GB in bytes
   # Force pure CPU computation (avoids crashing on missing AVX instructions in serverless VM)
   - name: OLLAMA_LLM_LIBRARY
     value: "cpu"

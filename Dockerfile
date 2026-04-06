@@ -41,7 +41,7 @@ COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment
 ENV PORT=8080 \
-    MODEL=qwen2.5:1.5b \
+    MODEL=gemma4:31b \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 
@@ -51,7 +51,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
-# Pre-pull ONLY qwen2.5:1.5b — wipe any other models first so nothing else is stored
+# Pre-pull ONLY gemma4:31b — wipe any other models first so nothing else is stored
 # OLLAMA_NO_KEYGEN prevents SSH identity keys being baked into the image
 RUN OLLAMA_NO_KEYGEN=true ollama serve & \
     pid=$! && \
@@ -59,7 +59,7 @@ RUN OLLAMA_NO_KEYGEN=true ollama serve & \
     for i in $(seq 1 30); do \
         curl -s http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && echo "Ollama ready after ${i}s" && break || sleep 1; \
     done && \
-    ollama pull qwen2.5:1.5b && \
+    ollama pull gemma4:31b && \
     kill $pid && \
     wait $pid 2>/dev/null || true && \
     rm -f /root/.ollama/id_ed25519 /root/.ollama/id_ed25519.pub

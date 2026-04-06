@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 PORT = int(os.getenv("PORT", "8080"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.getenv("MODEL", "qwen2.5:1.5b")
+MODEL = os.getenv("MODEL", "gemma4:31b")
 # Comma-separated list of allowed CORS origins (set in .env for production)
 ALLOWED_ORIGINS = [
     o.strip()
@@ -309,7 +309,7 @@ def clean_llm_text(text: str) -> str:
             break
     return text
 
-# AI Personality - Optimized for Phi-3 Mini
+# AI Personality - Optimized for Gemma4 31B
 SYSTEM_PERSONALITY = os.getenv(
     "AI_PERSONALITY",
     "Answer directly with specific facts, names, and examples. Do not repeat the question."
@@ -450,7 +450,7 @@ async def generate(payload: GenerateIn):
         "options": {
             "temperature": payload.temperature,
             "num_predict": 500,
-            "num_ctx": 1024,
+            "num_ctx": 4096,
             "stop": ["Question:", "User:", "Asker:"],
         },
     }
@@ -525,7 +525,7 @@ async def ask(payload: AskIn):
         "options": {
             "temperature": payload.temperature,
             "num_predict": 800,
-            "num_ctx": 1024,
+            "num_ctx": 4096,
             "stop": ["Question:", "User:", "Asker:"],
         },
     }
