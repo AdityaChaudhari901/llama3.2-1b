@@ -16,17 +16,31 @@ environment:
     - name: PORT
       value: "8080"
     - name: MODEL
-      value: gemma3:12b
+      value: gemma3:4b
     - name: OLLAMA_HOST
       value: 127.0.0.1:11434
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: OLLAMA_NUM_PARALLEL
-      value: "4"
+      value: "2"
     - name: OLLAMA_NUM_THREADS
-      value: "14"
+      value: "6"
     - name: GOMEMLIMIT
-      value: 30000MiB
+      value: 24576MiB
+    - name: RATE_LIMIT
+      value: "120/minute"
+    - name: MAX_QUEUE_DEPTH
+      value: "8"
+    - name: QUEUE_TIMEOUT_SECONDS
+      value: "20"
+    - name: DEFAULT_TEMPERATURE
+      value: "0.2"
+    - name: DEFAULT_NUM_PREDICT
+      value: "384"
+    - name: DEFAULT_NUM_CTX
+      value: "8192"
+    - name: MAX_HISTORY_CHARS
+      value: "16000"
     - name: OLLAMA_MAX_VRAM
       value: "30064771072"
     - name: OLLAMA_LLM_LIBRARY
@@ -61,16 +75,16 @@ serverlessConfig:
           Name: http
     Scaling:
         AutoStop: false
-        Min: 6
-        Max: 10
+        Min: 1
+        Max: 1
         MaxIdleTime: 300
     Resources:
-        CPU: 1
+        CPU: 16
         MemoryMB: 32768
         MemoryMaxMB: 32768
         DiskMB: 30720
     Timeout: 60
 service:
-    description: Ollama Gemma3 27B AI Assistant — React frontend + FastAPI backend
+    description: Ollama Gemma3 4B AI Assistant — React frontend + FastAPI backend
     name: ollama-ai-assistant
 version: "1"

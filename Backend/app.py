@@ -5,6 +5,7 @@ import logging
 import asyncio
 import time
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,10 +28,16 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT               = int(os.getenv("PORT", "8080"))
 OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL              = os.getenv("MODEL", "gemma3:12b")
-OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "4"))
-NUM_THREADS        = int(os.getenv("OLLAMA_NUM_THREADS", "14"))
-RATE_LIMIT         = os.getenv("RATE_LIMIT", "20/minute")
+MODEL              = os.getenv("MODEL", "gemma3:4b")
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "2"))
+NUM_THREADS        = int(os.getenv("OLLAMA_NUM_THREADS", "6"))
+RATE_LIMIT         = os.getenv("RATE_LIMIT", "120/minute")
+QUEUE_TIMEOUT_SECONDS = float(os.getenv("QUEUE_TIMEOUT_SECONDS", "20"))
+MAX_QUEUE_DEPTH    = int(os.getenv("MAX_QUEUE_DEPTH", "8"))
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.2"))
+DEFAULT_NUM_PREDICT = int(os.getenv("DEFAULT_NUM_PREDICT", "384"))
+DEFAULT_NUM_CTX    = int(os.getenv("DEFAULT_NUM_CTX", "8192"))
+MODEL_READY_TTL_SECONDS = float(os.getenv("MODEL_READY_TTL_SECONDS", "5"))
 
 ALLOWED_ORIGINS = [
     o.strip()
@@ -39,8 +46,8 @@ ALLOWED_ORIGINS = [
 ]
 
 MAX_INPUT_LENGTH  = 2000
-# Budget ~20 000 chars for history so system prompt + response fit in num_ctx=8192
-MAX_HISTORY_CHARS = 40_000
+# Keep recent turns without overfilling an 8k context window.
+MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", "16000"))
 
 # ── Prompt injection patterns ─────────────────────────────────────────────────
 INJECTION_PATTERNS = [
@@ -278,19 +285,27 @@ REFUSAL_TEMPLATES = {
     ),
 }
 
+COMPILED_INJECTION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE) for pattern in INJECTION_PATTERNS
+]
+COMPILED_PATTERN_CATEGORIES = {
+    category: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+    for category, patterns in PATTERN_CATEGORIES.items()
+}
+
 # ── Input validator ───────────────────────────────────────────────────────────
 def validate_input(text: str) -> str:
     if not text or not text.strip():
         raise ValueError("Input cannot be empty")
     if len(text) > MAX_INPUT_LENGTH:
         raise ValueError(f"Input too long. Max {MAX_INPUT_LENGTH} characters")
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
+    for pattern in COMPILED_INJECTION_PATTERNS:
+        if pattern.search(text):
             logger.warning(f"Prompt injection detected: {text[:100]}...")
             raise ValueError("Prompt injection attempt detected")
-    for category, patterns in PATTERN_CATEGORIES.items():
+    for category, patterns in COMPILED_PATTERN_CATEGORIES.items():
         for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+            if pattern.search(text):
                 logger.warning(f"Harmful content [{category}]: {text[:100]}...")
                 raise ValueError(REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']))
     return text.strip()
@@ -324,16 +339,20 @@ _HARMFUL_PHRASES = [
     r"(?:blast|blow\s+up|torch|set\s+fire|burn\s+down).{0,30}(?:car|vehicle|building|house)",
 ]
 
+COMPILED_HARMFUL_PHRASES = [
+    re.compile(pattern, re.IGNORECASE) for pattern in _HARMFUL_PHRASES
+]
+
 def validate_output(text: str) -> tuple[bool, str, str | None]:
     if not text or not text.strip():
         return True, text, None
-    for category, patterns in PATTERN_CATEGORIES.items():
+    for category, patterns in COMPILED_PATTERN_CATEGORIES.items():
         for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+            if pattern.search(text):
                 logger.error(f"OUTPUT VIOLATION [{category}]: {text[:100]}...")
                 return False, REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default']), category
-    for phrase in _HARMFUL_PHRASES:
-        if re.search(phrase, text, re.IGNORECASE):
+    for phrase in COMPILED_HARMFUL_PHRASES:
+        if phrase.search(text):
             logger.error(f"OUTPUT VIOLATION [harmful_phrase]: {text[:100]}...")
             return False, REFUSAL_TEMPLATES['default'], 'harmful_phrase'
     return True, text, None
@@ -357,14 +376,14 @@ def trim_to_context(messages: list[dict], max_chars: int = MAX_HISTORY_CHARS) ->
         result = [messages[-1]]
     return result
 
-# ── Shared generation options tuned for gemma3:27b on 16-core CPU ─────────────
+# ── Shared generation options ─────────────────────────────────────────────────
 def _base_options(temperature: float) -> dict:
     return {
         "temperature": temperature,
         "top_p": 0.95,
         "top_k": 64,
-        "num_predict": 1500,
-        "num_ctx": 16384,
+        "num_predict": DEFAULT_NUM_PREDICT,
+        "num_ctx": DEFAULT_NUM_CTX,
         "num_thread": NUM_THREADS,
         "stop": ["Question:", "User:", "Asker:"],
     }
@@ -376,10 +395,19 @@ SYSTEM_PERSONALITY = os.getenv(
 )
 
 # ── App + Rate limiter ────────────────────────────────────────────────────────
-limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
+def get_client_key(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_client_key, default_limits=[RATE_LIMIT])
 app = FastAPI()
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -392,34 +420,63 @@ app.add_middleware(
 # ── Shared resources ──────────────────────────────────────────────────────────
 _http_client: httpx.AsyncClient | None = None
 _ollama_semaphore: asyncio.Semaphore | None = None
+_model_ready_lock: asyncio.Lock | None = None
 
 # Tracks requests currently waiting for or holding a semaphore slot
 _active_requests: int = 0
+_running_requests: int = 0
+_waiting_requests: int = 0
 
 # Lightweight metrics
 _metrics: dict = {
     "requests_total": 0,
     "requests_blocked_safety": 0,
     "requests_rate_limited": 0,
+    "requests_queue_timeouts": 0,
+    "requests_rejected_overload": 0,
+    "requests_client_cancelled": 0,
     "avg_ttft_ms": 0.0,
     "ttft_samples": 0,
+    "avg_queue_wait_ms": 0.0,
+    "queue_wait_samples": 0,
     "total_tokens_streamed": 0,
 }
+
+_model_ready_cache: dict = {"result": False, "expires": 0.0}
+
+
+class ClientDisconnected(Exception):
+    """Raised when an SSE client disconnects before generation completes."""
+
+
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    _metrics["requests_rate_limited"] += 1
+    return _rate_limit_exceeded_handler(request, exc)
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
 
 @app.on_event("startup")
 async def startup_event():
-    global _http_client, _ollama_semaphore
+    global _http_client, _ollama_semaphore, _model_ready_lock
     _http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=5.0),
         limits=httpx.Limits(
-            max_connections=OLLAMA_NUM_PARALLEL + 4,
-            max_keepalive_connections=OLLAMA_NUM_PARALLEL,
+            max_connections=OLLAMA_NUM_PARALLEL + 8,
+            max_keepalive_connections=OLLAMA_NUM_PARALLEL + 2,
             keepalive_expiry=30,
         ),
     )
     _ollama_semaphore = asyncio.Semaphore(OLLAMA_NUM_PARALLEL)
-    logger.info(f"HTTP client ready | parallel={OLLAMA_NUM_PARALLEL} | threads={NUM_THREADS}")
+    _model_ready_lock = asyncio.Lock()
+    logger.info(
+        "HTTP client ready | parallel=%s | threads=%s | queue_limit=%s | queue_timeout=%ss",
+        OLLAMA_NUM_PARALLEL,
+        NUM_THREADS,
+        MAX_QUEUE_DEPTH,
+        QUEUE_TIMEOUT_SECONDS,
+    )
     asyncio.create_task(_warmup_model())
 
 
@@ -444,6 +501,7 @@ async def _warmup_model():
                 },
             )
             if r.status_code == 200:
+                _set_model_ready(True, ttl_seconds=30.0)
                 logger.info("Model loaded into RAM and ready.")
                 return
         except Exception as e:
@@ -472,7 +530,7 @@ class ChatMessage(BaseModel):
 
 class AskIn(BaseModel):
     messages: list[ChatMessage]
-    temperature: float | None = 0.7
+    temperature: float | None = DEFAULT_TEMPERATURE
     personality: str | None = None
 
     @field_validator('messages')
@@ -489,7 +547,7 @@ class AskIn(BaseModel):
 
 class GenerateIn(BaseModel):
     prompt: str
-    temperature: float | None = 0.7
+    temperature: float | None = DEFAULT_TEMPERATURE
 
     @field_validator('prompt')
     @classmethod
@@ -497,44 +555,122 @@ class GenerateIn(BaseModel):
         return validate_input(v)
 
 
-# ── Model readiness (cached 5 s) ──────────────────────────────────────────────
-_model_ready_cache: dict = {"result": False, "expires": 0.0}
-
-def _is_model_ready() -> bool:
-    now = time.monotonic()
-    if now < _model_ready_cache["expires"]:
-        return _model_ready_cache["result"]
-    result = False
-    try:
-        r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.0)
-        if r.status_code == 200:
-            for m in r.json().get("models", []):
-                if m.get("name") == MODEL or m.get("name", "").startswith(MODEL):
-                    result = True
-                    break
-    except Exception:
-        pass
+def _set_model_ready(result: bool, ttl_seconds: float = MODEL_READY_TTL_SECONDS):
     _model_ready_cache["result"] = result
-    _model_ready_cache["expires"] = now + 5.0
-    return result
+    _model_ready_cache["expires"] = time.monotonic() + ttl_seconds
+
+
+async def _is_model_ready(force: bool = False) -> bool:
+    if _http_client is None:
+        return False
+
+    now = time.monotonic()
+    if not force and now < _model_ready_cache["expires"]:
+        return _model_ready_cache["result"]
+
+    if _model_ready_lock is None:
+        return _model_ready_cache["result"]
+
+    async with _model_ready_lock:
+        now = time.monotonic()
+        if not force and now < _model_ready_cache["expires"]:
+            return _model_ready_cache["result"]
+
+        result = False
+        try:
+            r = await _http_client.get(f"{OLLAMA_URL}/api/tags", timeout=1.0)
+            if r.status_code == 200:
+                for m in r.json().get("models", []):
+                    if m.get("name") == MODEL or m.get("name", "").startswith(MODEL):
+                        result = True
+                        break
+        except httpx.HTTPError:
+            result = False
+
+        _set_model_ready(result)
+        return result
+
+
+def _update_average(avg_key: str, samples_key: str, value: float):
+    n = _metrics[samples_key] + 1
+    _metrics[avg_key] = (_metrics[avg_key] * _metrics[samples_key] + value) / n
+    _metrics[samples_key] = n
 
 
 def _update_ttft(ttft_ms: float):
     """Rolling average of time-to-first-token."""
-    n = _metrics["ttft_samples"] + 1
-    _metrics["avg_ttft_ms"] = (_metrics["avg_ttft_ms"] * _metrics["ttft_samples"] + ttft_ms) / n
-    _metrics["ttft_samples"] = n
+    _update_average("avg_ttft_ms", "ttft_samples", ttft_ms)
+
+
+def _update_queue_wait(wait_ms: float):
+    """Rolling average of request queue wait time."""
+    _update_average("avg_queue_wait_ms", "queue_wait_samples", wait_ms)
+
+
+def _resolve_temperature(value: float | None) -> float:
+    return DEFAULT_TEMPERATURE if value is None else value
+
+
+@asynccontextmanager
+async def _ollama_slot(request: Request | None = None):
+    global _active_requests, _running_requests, _waiting_requests
+
+    if _ollama_semaphore is None:
+        raise HTTPException(503, detail="Model service unavailable.")
+    if _waiting_requests >= MAX_QUEUE_DEPTH:
+        _metrics["requests_rejected_overload"] += 1
+        raise HTTPException(429, detail="Server is busy. Too many requests are queued.")
+
+    acquired = False
+    wait_started = time.monotonic()
+    _active_requests += 1
+    _waiting_requests += 1
+
+    try:
+        remaining = QUEUE_TIMEOUT_SECONDS
+        while remaining > 0:
+            if request is not None and await request.is_disconnected():
+                _metrics["requests_client_cancelled"] += 1
+                raise ClientDisconnected()
+
+            step_started = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    _ollama_semaphore.acquire(),
+                    timeout=min(1.0, remaining),
+                )
+                acquired = True
+                break
+            except asyncio.TimeoutError:
+                remaining -= time.monotonic() - step_started
+
+        if not acquired:
+            _metrics["requests_queue_timeouts"] += 1
+            raise HTTPException(503, detail="Server is busy. Please retry in a few seconds.")
+
+        _waiting_requests -= 1
+        _running_requests += 1
+        queue_wait_ms = (time.monotonic() - wait_started) * 1000
+        _update_queue_wait(queue_wait_ms)
+        yield round(queue_wait_ms)
+    finally:
+        if acquired:
+            _running_requests -= 1
+            _ollama_semaphore.release()
+        else:
+            _waiting_requests -= 1
+        _active_requests -= 1
 
 
 # ── Health / Readiness / Queue / Metrics ─────────────────────────────────────
 @app.get("/health")
-def health():
-    return {"ok": True, "model": MODEL, "model_ready": _is_model_ready()}
+async def health():
+    return {"ok": True, "model": MODEL, "model_ready": await _is_model_ready()}
 
 
 @app.get("/ready")
-def ready():
-    return {"ready": _is_model_ready(), "model": MODEL}
+async def ready():
+    return {"ready": await _is_model_ready(), "model": MODEL}
 
 
 @app.get("/queue")
@@ -542,14 +678,24 @@ def queue_status():
     """How many requests are currently waiting for an Ollama slot."""
     return {
         "active": _active_requests,
+        "running": _running_requests,
         "capacity": OLLAMA_NUM_PARALLEL,
-        "waiting": max(0, _active_requests - OLLAMA_NUM_PARALLEL),
+        "queued": _waiting_requests,
+        "queue_limit": MAX_QUEUE_DEPTH,
     }
 
 
 @app.get("/metrics")
-def metrics():
-    return {**_metrics, "model": MODEL, "model_ready": _is_model_ready()}
+async def metrics():
+    return {
+        **_metrics,
+        "model": MODEL,
+        "model_ready": await _is_model_ready(),
+        "running": _running_requests,
+        "queued": _waiting_requests,
+        "capacity": OLLAMA_NUM_PARALLEL,
+        "queue_limit": MAX_QUEUE_DEPTH,
+    }
 
 
 # ── /generate (raw prompt, non-streaming) ────────────────────────────────────
@@ -559,22 +705,23 @@ async def generate(request: Request, payload: GenerateIn):
     logger.info(f"Generate: {payload.prompt[:50]}...")
     _metrics["requests_total"] += 1
 
-    if not _is_model_ready():
+    if not await _is_model_ready():
         raise HTTPException(503, detail=f"Model '{MODEL}' is still loading.")
 
     body = {
         "model": MODEL,
         "messages": [{"role": "user", "content": payload.prompt}],
         "stream": False,
-        "options": _base_options(payload.temperature),
+        "options": _base_options(_resolve_temperature(payload.temperature)),
     }
 
     max_retries, retry_delay = 3, 2
     for attempt in range(max_retries):
         try:
-            async with _ollama_semaphore:
+            async with _ollama_slot() as queue_wait_ms:
                 r = await _http_client.post(f"{OLLAMA_URL}/api/chat", json=body)
                 r.raise_for_status()
+                _set_model_ready(True)
                 data = r.json()
                 response_text = clean_llm_text(
                     data.get("message", {}).get("content", "").strip()
@@ -583,7 +730,13 @@ async def generate(request: Request, payload: GenerateIn):
                 if not is_safe:
                     _metrics["requests_blocked_safety"] += 1
                     response_text = validated_text
-                return {"response": response_text or "I couldn't generate a proper response.", "model": MODEL}
+                return {
+                    "response": response_text or "I couldn't generate a proper response.",
+                    "model": MODEL,
+                    "queue_wait_ms": queue_wait_ms,
+                }
+        except HTTPException:
+            raise
         except httpx.HTTPStatusError as e:
             logger.error(f"Ollama HTTP error (attempt {attempt+1}): {e.response.status_code}")
             if attempt < max_retries - 1 and e.response.status_code == 500:
@@ -592,6 +745,7 @@ async def generate(request: Request, payload: GenerateIn):
             raise HTTPException(503, detail="Model service temporarily unavailable.")
         except httpx.RequestError as e:
             logger.error(f"Ollama connection error (attempt {attempt+1}): {e}")
+            _set_model_ready(False, ttl_seconds=1.0)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
@@ -617,11 +771,10 @@ async def ask_stream(request: Request, payload: AskIn):
       {"type": "blocked", "refusal": "..."}
       {"type": "error",   "message": "..."}
     """
-    global _active_requests
     logger.info(f"Stream: {len(payload.messages)} messages in history")
     _metrics["requests_total"] += 1
 
-    if not _is_model_ready():
+    if not await _is_model_ready():
         raise HTTPException(503, detail=f"Model '{MODEL}' is still loading.")
 
     personality = payload.personality or SYSTEM_PERSONALITY
@@ -636,24 +789,27 @@ async def ask_stream(request: Request, payload: AskIn):
         "model": MODEL,
         "messages": chat_messages,
         "stream": True,
-        "options": _base_options(payload.temperature),
+        "options": _base_options(_resolve_temperature(payload.temperature)),
     }
 
     async def event_stream():
-        global _active_requests
         full_text  = ""
         request_start = time.monotonic()
         first_token_received = False
         max_retries, retry_delay = 3, 5
 
-        _active_requests += 1
         try:
             for attempt in range(max_retries):
                 try:
-                    async with _ollama_semaphore:
+                    async with _ollama_slot(request) as queue_wait_ms:
                         async with _http_client.stream("POST", f"{OLLAMA_URL}/api/chat", json=body) as r:
                             r.raise_for_status()
+                            _set_model_ready(True)
                             async for line in r.aiter_lines():
+                                if await request.is_disconnected():
+                                    _metrics["requests_client_cancelled"] += 1
+                                    logger.info("Stream client disconnected during generation")
+                                    return
                                 if not line.strip():
                                     continue
                                 try:
@@ -683,9 +839,15 @@ async def ask_stream(request: Request, payload: AskIn):
                                         yield f"data: {json.dumps({'type': 'blocked', 'refusal': refusal})}\n\n"
                                     else:
                                         ttft_ms = round((time.monotonic() - request_start) * 1000)
-                                        yield f"data: {json.dumps({'type': 'done', 'ttft_ms': ttft_ms})}\n\n"
+                                        yield f"data: {json.dumps({'type': 'done', 'ttft_ms': ttft_ms, 'queue_wait_ms': queue_wait_ms})}\n\n"
                                     return
                     return  # success, exit retry loop
+                except ClientDisconnected:
+                    logger.info("Stream client disconnected while waiting for a model slot")
+                    return
+                except HTTPException as e:
+                    yield f"data: {json.dumps({'type': 'error', 'message': e.detail})}\n\n"
+                    return
                 except httpx.HTTPStatusError as e:
                     logger.error(f"Stream HTTP error (attempt {attempt+1}): {e.response.status_code}")
                     if attempt < max_retries - 1 and e.response.status_code in (500, 503):
@@ -695,6 +857,7 @@ async def ask_stream(request: Request, payload: AskIn):
                     return
                 except httpx.RequestError as e:
                     logger.error(f"Stream connection error (attempt {attempt+1}): {e}")
+                    _set_model_ready(False, ttl_seconds=1.0)
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
                         continue
@@ -703,8 +866,6 @@ async def ask_stream(request: Request, payload: AskIn):
         except Exception as e:
             logger.error(f"Stream unexpected error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': 'An unexpected error occurred.'})}\n\n"
-        finally:
-            _active_requests -= 1
 
     return StreamingResponse(
         event_stream(),
