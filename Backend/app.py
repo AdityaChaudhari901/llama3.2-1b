@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT               = int(os.getenv("PORT", "8080"))
 OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL              = os.getenv("MODEL", "gemma3:27b")
-OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "4"))
+MODEL              = os.getenv("MODEL", "gemma3:4b")
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "6"))
 NUM_THREADS        = int(os.getenv("OLLAMA_NUM_THREADS", "14"))
 RATE_LIMIT         = os.getenv("RATE_LIMIT", "20/minute")
 
@@ -40,7 +40,7 @@ ALLOWED_ORIGINS = [
 
 MAX_INPUT_LENGTH  = 2000
 # Budget ~20 000 chars for history so system prompt + response fit in num_ctx=8192
-MAX_HISTORY_CHARS = 20_000
+MAX_HISTORY_CHARS = 40_000
 
 # ── Prompt injection patterns ─────────────────────────────────────────────────
 INJECTION_PATTERNS = [
@@ -364,7 +364,7 @@ def _base_options(temperature: float) -> dict:
         "top_p": 0.95,
         "top_k": 64,
         "num_predict": 1500,
-        "num_ctx": 8192,
+        "num_ctx": 16384,
         "num_thread": NUM_THREADS,
         "stop": ["Question:", "User:", "Asker:"],
     }

@@ -12,17 +12,17 @@ environment:
     - name: PORT
       value: "8080"
     - name: MODEL
-      value: gemma3:27b
+      value: gemma3:4b
     - name: OLLAMA_HOST
       value: 127.0.0.1:11434
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: OLLAMA_NUM_PARALLEL
-      value: "4"
+      value: "6"
     - name: OLLAMA_NUM_THREADS
       value: "14"
     - name: GOMEMLIMIT
-      value: 28000MiB
+      value: 30000MiB
     - name: OLLAMA_MAX_VRAM
       value: "30064771072"
     - name: OLLAMA_LLM_LIBRARY
