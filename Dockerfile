@@ -43,19 +43,10 @@ ENV PORT=8080 \
 
 EXPOSE 8080
 
-# Pull model at build time so the container starts instantly with no cold pull.
-# Requires the build environment to have sufficient disk (>20 GB).
-# OLLAMA_NO_KEYGEN prevents SSH identity keys from being baked into the image.
-RUN OLLAMA_NO_KEYGEN=true ollama serve & \
-    pid=$! && \
-    echo "Waiting for Ollama to be ready..." && \
-    for i in $(seq 1 60); do \
-        curl -s http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && echo "Ollama ready after ${i}s" && break || sleep 1; \
-    done && \
-    ollama pull gemma3:27b && \
-    kill $pid && \
-    wait $pid 2>/dev/null || true && \
-    rm -f /root/.ollama/id_ed25519 /root/.ollama/id_ed25519.pub
+# NOTE: ollama pull is intentionally NOT done here.
+# Kaniko (Boltic's builder) OOM-kills the build when snapshotting a 17 GB layer.
+# The model is pulled at container start by start.sh and stored on the
+# persistent volume — subsequent restarts reuse the cached model instantly.
 
 HEALTHCHECK --interval=30s --timeout=15s --start-period=300s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
