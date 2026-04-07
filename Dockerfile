@@ -37,7 +37,7 @@ COPY --from=frontend-builder /app/frontend/dist ./dist
 
 # Runtime environment defaults (all overridable via boltic.yaml env block)
 ENV PORT=8080 \
-    MODEL=gemma3:4b \
+    MODEL=gemma3:12b \
     OLLAMA_HOST=127.0.0.1:11434 \
     PYTHONUNBUFFERED=1
 

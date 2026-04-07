@@ -27,14 +27,14 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT               = int(os.getenv("PORT", "8080"))
 OLLAMA_URL         = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL              = os.getenv("MODEL", "gemma3:4b")
-OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "6"))
+MODEL              = os.getenv("MODEL", "gemma3:12b")
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "4"))
 NUM_THREADS        = int(os.getenv("OLLAMA_NUM_THREADS", "14"))
 RATE_LIMIT         = os.getenv("RATE_LIMIT", "20/minute")
 
 ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173").split(",")
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:4173").split(",")
     if o.strip()
 ]
 
