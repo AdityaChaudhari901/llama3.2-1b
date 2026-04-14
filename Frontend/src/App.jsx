@@ -49,12 +49,8 @@ const UserIcon = () => (
     </svg>
 )
 const BotIcon = () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-        <circle cx="8.5" cy="16" r="1" fill="currentColor" stroke="none" />
-        <circle cx="15.5" cy="16" r="1" fill="currentColor" stroke="none" />
-        <path d="M9.5 19.5c.8.5 2.5.5 3 0" />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/>
     </svg>
 )
 const SearchIcon = () => (
@@ -220,24 +216,34 @@ function Message({ msg, onRetry, onRegenerate }) {
     const [copied, setCopied] = useState(false)
     const isError = Boolean(msg.error && !msg.loading && !msg.streaming)
     const isDone  = msg.role === 'assistant' && !msg.loading && !msg.streaming && msg.content
+    const isUser  = msg.role === 'user'
 
     return (
         <div className={`message message--${msg.role}`}>
+            {/* Avatar */}
             <div className="message__avatar">
-                {msg.role === 'user' ? <UserIcon /> : <BotIcon />}
+                {isUser ? <UserIcon /> : <BotIcon />}
             </div>
+
             <div className="message__body">
+                {/* Sender label + timestamp */}
+                <div className="message__header">
+                    <span className="message__sender">{isUser ? 'You' : 'Fynd AI'}</span>
+                    {msg.ts && <span className="message__ts">{formatTs(msg.ts)}</span>}
+                </div>
+
+                {/* Bubble */}
                 <div className={`message__bubble${isError ? ' message__bubble--error' : ''}`}>
                     {msg.loading ? <TypingDots /> : (
-                        msg.role === 'assistant' ? (
+                        isUser ? (
+                            <span className="message__text">{msg.content}</span>
+                        ) : (
                             <div className="message__markdown">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
                                     {msg.content}
                                 </ReactMarkdown>
                                 {msg.streaming && <span className="stream-cursor" />}
                             </div>
-                        ) : (
-                            <span className="message__text">{msg.content}</span>
                         )
                     )}
                 </div>
@@ -270,13 +276,6 @@ function Message({ msg, onRetry, onRegenerate }) {
                         {msg.ttft_ms && !isError && (
                             <span className="ttft-badge">{msg.ttft_ms}ms</span>
                         )}
-                    </div>
-                )}
-
-                {/* Timestamp */}
-                {msg.ts && (
-                    <div className="message__meta">
-                        <span className="message__ts">{formatTs(msg.ts)}</span>
                     </div>
                 )}
             </div>
