@@ -10,7 +10,8 @@ echo "=========================================="
 # ── 1. Apply Ollama config (boltic does not inject env vars reliably) ─────────
 export OLLAMA_HOST=127.0.0.1:11434
 export OLLAMA_MODELS=${OLLAMA_MODELS:-/app/.ollama/models}
-export OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
+# Match the intended deployment defaults even when Boltic drops env injection.
+export OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-4}
 export OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS:-4}
 export OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
 export OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
