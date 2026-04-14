@@ -1,4 +1,5 @@
 import os
+import uuid
 import httpx
 import re
 import logging
@@ -37,7 +38,10 @@ MAX_QUEUE_DEPTH    = int(os.getenv("MAX_QUEUE_DEPTH", "8"))
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.2"))
 DEFAULT_NUM_PREDICT = int(os.getenv("DEFAULT_NUM_PREDICT", "256"))
 DEFAULT_NUM_CTX    = int(os.getenv("DEFAULT_NUM_CTX", "2048"))
+DEFAULT_NUM_BATCH  = int(os.getenv("DEFAULT_NUM_BATCH", "64"))
 MODEL_READY_TTL_SECONDS = float(os.getenv("MODEL_READY_TTL_SECONDS", "5"))
+USE_MMAP          = os.getenv("OLLAMA_USE_MMAP", "1").strip().lower() not in {"0", "false", "no", "off"}
+KEEP_ALIVE        = os.getenv("OLLAMA_KEEP_ALIVE", "0")
 
 ALLOWED_ORIGINS = [
     o.strip()
@@ -45,7 +49,7 @@ ALLOWED_ORIGINS = [
     if o.strip()
 ]
 
-MAX_INPUT_LENGTH  = 2000
+MAX_INPUT_LENGTH  = int(os.getenv("MAX_INPUT_LENGTH", "2000"))
 # Keep recent turns within the reduced-context serverless profile.
 MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", "4000"))
 
@@ -384,7 +388,9 @@ def _base_options(temperature: float) -> dict:
         "top_k": 64,
         "num_predict": DEFAULT_NUM_PREDICT,
         "num_ctx": DEFAULT_NUM_CTX,
+        "num_batch": DEFAULT_NUM_BATCH,
         "num_thread": NUM_THREADS,
+        "use_mmap": USE_MMAP,
         "stop": ["Question:", "User:", "Asker:"],
     }
 
@@ -406,7 +412,37 @@ def get_client_key(request: Request) -> str:
 
 
 limiter = Limiter(key_func=get_client_key, default_limits=[RATE_LIMIT])
-app = FastAPI()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # ── Startup ───────────────────────────────────────────────────────────────
+    global _http_client, _ollama_semaphore, _model_ready_lock
+    _http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=5.0),
+        limits=httpx.Limits(
+            max_connections=OLLAMA_NUM_PARALLEL + 8,
+            max_keepalive_connections=OLLAMA_NUM_PARALLEL + 2,
+            keepalive_expiry=30,
+        ),
+    )
+    _ollama_semaphore = asyncio.Semaphore(OLLAMA_NUM_PARALLEL)
+    _model_ready_lock = asyncio.Lock()
+    logger.info(
+        "HTTP client ready | parallel=%s | threads=%s | queue_limit=%s | queue_timeout=%ss",
+        OLLAMA_NUM_PARALLEL,
+        NUM_THREADS,
+        MAX_QUEUE_DEPTH,
+        QUEUE_TIMEOUT_SECONDS,
+    )
+    asyncio.create_task(_warmup_model())
+    yield
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    if _http_client:
+        await _http_client.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 
 app.add_middleware(
@@ -457,35 +493,6 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
 
-@app.on_event("startup")
-async def startup_event():
-    global _http_client, _ollama_semaphore, _model_ready_lock
-    _http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=5.0),
-        limits=httpx.Limits(
-            max_connections=OLLAMA_NUM_PARALLEL + 8,
-            max_keepalive_connections=OLLAMA_NUM_PARALLEL + 2,
-            keepalive_expiry=30,
-        ),
-    )
-    _ollama_semaphore = asyncio.Semaphore(OLLAMA_NUM_PARALLEL)
-    _model_ready_lock = asyncio.Lock()
-    logger.info(
-        "HTTP client ready | parallel=%s | threads=%s | queue_limit=%s | queue_timeout=%ss",
-        OLLAMA_NUM_PARALLEL,
-        NUM_THREADS,
-        MAX_QUEUE_DEPTH,
-        QUEUE_TIMEOUT_SECONDS,
-    )
-    asyncio.create_task(_warmup_model())
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    if _http_client:
-        await _http_client.aclose()
-
-
 async def _warmup_model():
     """Load model into RAM before the first user request."""
     await asyncio.sleep(5)
@@ -497,7 +504,14 @@ async def _warmup_model():
                     "model": MODEL,
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": False,
-                    "options": {"num_predict": 1, "num_ctx": 512, "num_thread": NUM_THREADS},
+                    "keep_alive": KEEP_ALIVE,
+                    "options": {
+                        "num_predict": 1,
+                        "num_ctx": 512,
+                        "num_batch": 16,
+                        "num_thread": NUM_THREADS,
+                        "use_mmap": USE_MMAP,
+                    },
                 },
             )
             if r.status_code == 200:
@@ -512,7 +526,7 @@ async def _warmup_model():
 
 # ── Validation error handler ──────────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(_request: Request, exc: RequestValidationError):
     errors = exc.errors()
     if errors:
         msg = str(errors[0].get("msg", "Validation error"))
@@ -591,20 +605,24 @@ async def _is_model_ready(force: bool = False) -> bool:
         return result
 
 
-def _update_average(avg_key: str, samples_key: str, value: float):
-    n = _metrics[samples_key] + 1
-    _metrics[avg_key] = (_metrics[avg_key] * _metrics[samples_key] + value) / n
-    _metrics[samples_key] = n
+_EMA_ALPHA = 0.1  # weight given to the latest sample (higher = more reactive)
+
+
+def _update_ema(avg_key: str, samples_key: str, value: float):
+    """Exponential moving average — stays responsive to recent changes."""
+    if _metrics[samples_key] == 0:
+        _metrics[avg_key] = value
+    else:
+        _metrics[avg_key] = _EMA_ALPHA * value + (1 - _EMA_ALPHA) * _metrics[avg_key]
+    _metrics[samples_key] += 1
 
 
 def _update_ttft(ttft_ms: float):
-    """Rolling average of time-to-first-token."""
-    _update_average("avg_ttft_ms", "ttft_samples", ttft_ms)
+    _update_ema("avg_ttft_ms", "ttft_samples", ttft_ms)
 
 
 def _update_queue_wait(wait_ms: float):
-    """Rolling average of request queue wait time."""
-    _update_average("avg_queue_wait_ms", "queue_wait_samples", wait_ms)
+    _update_ema("avg_queue_wait_ms", "queue_wait_samples", wait_ms)
 
 
 def _resolve_temperature(value: float | None) -> float:
@@ -701,8 +719,9 @@ async def metrics():
 # ── /generate (raw prompt, non-streaming) ────────────────────────────────────
 @app.post("/generate")
 @limiter.limit(RATE_LIMIT)
-async def generate(request: Request, payload: GenerateIn):
-    logger.info(f"Generate: {payload.prompt[:50]}...")
+async def generate(request: Request, payload: GenerateIn):  # noqa: ARG001 — slowapi needs `request`
+    req_id = uuid.uuid4().hex[:8]
+    logger.info(f"[{req_id}] Generate: {payload.prompt[:50]}...")
     _metrics["requests_total"] += 1
 
     if not await _is_model_ready():
@@ -712,6 +731,7 @@ async def generate(request: Request, payload: GenerateIn):
         "model": MODEL,
         "messages": [{"role": "user", "content": payload.prompt}],
         "stream": False,
+        "keep_alive": KEEP_ALIVE,
         "options": _base_options(_resolve_temperature(payload.temperature)),
     }
 
@@ -744,14 +764,14 @@ async def generate(request: Request, payload: GenerateIn):
                 continue
             raise HTTPException(503, detail="Model service temporarily unavailable.")
         except httpx.RequestError as e:
-            logger.error(f"Ollama connection error (attempt {attempt+1}): {e}")
+            logger.error(f"[{req_id}] Ollama connection error (attempt {attempt+1}): {e}")
             _set_model_ready(False, ttl_seconds=1.0)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
             raise HTTPException(503, detail="Cannot connect to model service.")
         except Exception as e:
-            logger.error(f"Unexpected error (attempt {attempt+1}): {e}")
+            logger.error(f"[{req_id}] Unexpected error (attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
@@ -771,7 +791,8 @@ async def ask_stream(request: Request, payload: AskIn):
       {"type": "blocked", "refusal": "..."}
       {"type": "error",   "message": "..."}
     """
-    logger.info(f"Stream: {len(payload.messages)} messages in history")
+    req_id = uuid.uuid4().hex[:8]
+    logger.info(f"[{req_id}] Stream: {len(payload.messages)} messages in history")
     _metrics["requests_total"] += 1
 
     if not await _is_model_ready():
@@ -789,6 +810,7 @@ async def ask_stream(request: Request, payload: AskIn):
         "model": MODEL,
         "messages": chat_messages,
         "stream": True,
+        "keep_alive": KEEP_ALIVE,
         "options": _base_options(_resolve_temperature(payload.temperature)),
     }
 
@@ -808,7 +830,7 @@ async def ask_stream(request: Request, payload: AskIn):
                             async for line in r.aiter_lines():
                                 if await request.is_disconnected():
                                     _metrics["requests_client_cancelled"] += 1
-                                    logger.info("Stream client disconnected during generation")
+                                    logger.info(f"[{req_id}] Stream client disconnected during generation")
                                     return
                                 if not line.strip():
                                     continue
@@ -835,7 +857,7 @@ async def ask_stream(request: Request, payload: AskIn):
                                     if not is_safe:
                                         _metrics["requests_blocked_safety"] += 1
                                         refusal = REFUSAL_TEMPLATES.get(category, REFUSAL_TEMPLATES['default'])
-                                        logger.error(f"Stream output blocked [{category}]")
+                                        logger.error(f"[{req_id}] Stream output blocked [{category}]")
                                         yield f"data: {json.dumps({'type': 'blocked', 'refusal': refusal})}\n\n"
                                     else:
                                         ttft_ms = round((time.monotonic() - request_start) * 1000)
