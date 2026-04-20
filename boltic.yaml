@@ -41,6 +41,9 @@ environment:
       value: "6"
 serverlessConfig:
     Env:
+        BOLTIC_TOKEN: 15647a83-d0be-4e24-b352-97bbc688d695
+        EMBEDDINGS_MODEL: openai/text-embedding-3-small
+        MODEL: openai/gpt-4o-mini
         OPENROUTER_API_KEY: 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
     PortMap:
         - Protocol: http
