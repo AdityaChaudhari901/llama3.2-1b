@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+import traceback
 import uuid
 
 import httpx
@@ -292,7 +293,7 @@ async def ask_stream(request: Request, payload: AskIn):
                         http,
                         tool_messages,
                         temperature=temperature,
-                        max_tokens=128,
+                        max_tokens=512,
                         tools=TOOLS,
                         tool_choice="auto",
                         stream=False,
@@ -378,9 +379,12 @@ async def ask_stream(request: Request, payload: AskIn):
                         chunk = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
-                    delta   = chunk.get("choices", [{}])[0].get("delta", {})
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta   = choices[0].get("delta", {})
                     content = delta.get("content", "")
-                    finish  = chunk.get("choices", [{}])[0].get("finish_reason")
+                    finish  = choices[0].get("finish_reason")
                     if content:
                         if first_token:
                             first_token = False
@@ -397,7 +401,7 @@ async def ask_stream(request: Request, payload: AskIn):
             logger.error("[%s] connection error: %s", req_id, e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to model service.'})}\n\n"
         except Exception as e:
-            logger.error("[%s] unexpected error: %s", req_id, e)
+            logger.error("[%s] unexpected error: %s\n%s", req_id, e, traceback.format_exc())
             yield f"data: {json.dumps({'type': 'error', 'message': 'An unexpected error occurred.'})}\n\n"
 
     return StreamingResponse(
