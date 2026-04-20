@@ -36,11 +36,7 @@ const StopIcon = () => (
         <rect x="4" y="4" width="16" height="16" rx="3" />
     </svg>
 )
-const UserIcon = () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-    </svg>
-)
+
 const BotIcon = () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
         <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/>
@@ -270,9 +266,11 @@ function Message({ msg, onRetry }) {
 
     return (
         <div className={`message message--${msg.role}`}>
-            <div className="message__avatar" aria-hidden="true">
-                {isUser ? <UserIcon /> : <BotIcon />}
-            </div>
+            {!isUser && (
+                <div className="message__avatar" aria-hidden="true">
+                    <BotIcon />
+                </div>
+            )}
 
             <div className="message__body">
                 <div className="message__header">
