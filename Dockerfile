@@ -25,6 +25,9 @@ COPY Backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY Backend/app.py .
+COPY Backend/models.py .
+COPY Backend/services/ ./services/
+COPY Backend/routers/ ./routers/
 COPY --from=frontend-builder /app/frontend/dist ./dist
 
 ENV PORT=8080 \
