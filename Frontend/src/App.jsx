@@ -689,9 +689,9 @@ function SettingsModal({ personality, setPersonality, customPrompt, setCustomPro
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
     const [convos, setConvos] = useState(() => {
-        const stored = loadConversations()
-        if (stored[0]?.messages?.length > 0) return [newConversation(), ...stored]
-        return stored
+        const fresh = newConversation()
+        const stored = loadConversations().filter(c => c.messages.some(m => m.content && !m.loading))
+        return [fresh, ...stored]
     })
     const [activeId, setActiveId] = useState(() => convos[0].id)
 
@@ -868,7 +868,11 @@ export default function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     messages: messagesPayload,
-                    personality: personality === 'custom' ? customPrompt : PERSONALITIES[personality],
+                    // Only override with custom prompt — presets use backend SYSTEM_PERSONALITY
+                    // which enforces strict product tool-calling rules
+                    ...(personality === 'custom' && customPrompt
+                        ? { personality: customPrompt }
+                        : {}),
                 }),
                 signal: controller.signal,
             })
