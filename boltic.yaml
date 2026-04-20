@@ -12,7 +12,7 @@ environment:
     - name: PORT
       value: "8080"
     - name: OPENROUTER_API_KEY
-      value: "${OPENROUTER_API_KEY}"
+      value: ${OPENROUTER_API_KEY}
     - name: MODEL
       value: openai/gpt-4o-mini
     - name: EMBEDDINGS_MODEL
@@ -26,35 +26,22 @@ environment:
     - name: MAX_HISTORY_CHARS
       value: "40000"
     - name: APP_SITE_URL
-      value: "https://llama-qwen-e5b9730c.serverless.boltic.app"
+      value: https://llama-qwen-e5b9730c.serverless.boltic.app
     - name: APP_TITLE
-      value: "Fynd AI"
+      value: Fynd AI
     - name: BOLTIC_TOKEN
-      value: "15647a83-d0be-4e24-b352-97bbc688d695"
+      value: 15647a83-d0be-4e24-b352-97bbc688d695
     - name: BOLTIC_PRODUCTS_TABLE
-      value: "735364bf-48e3-4723-b549-e3e123562d2a"
+      value: 735364bf-48e3-4723-b549-e3e123562d2a
     - name: BOLTIC_RECS_TABLE
-      value: "db2b84be-744e-4e16-a369-d3d7d17b2ec4"
+      value: db2b84be-744e-4e16-a369-d3d7d17b2ec4
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: WEB_CONCURRENCY
       value: "6"
 serverlessConfig:
     Env:
-        APPLICATION_ENV_PREFIX: BOLT
-        BOLT_APPLICATION_ACCOUNT_ID: b274cb0b-f8b2-4aac-b79f-71eb7d2e3fe5
-        BOLT_APPLICATION_AUTO_STOP: "false"
-        BOLT_APPLICATION_CODE_TYPE: ""
-        BOLT_APPLICATION_LANGUAGE: python/3.11
-        BOLT_APPLICATION_MAX_IDLE_TIME: "300"
-        BOLT_APPLICATION_NAME: llama Qwen
-        BOLT_APPLICATION_ORG_ID: b274cb0b-f8b2-4aac-b79f-71eb7d2e3fe5
-        BOLT_APPLICATION_PORT: "8080"
-        BOLT_APPLICATION_PROTOCOL: http
-        BOLT_APPLICATION_REGION_ID: asia-south1
-        BOLT_APPLICATION_RUNTIME: docker
-        BOLT_APPLICATION_SLUG: llama-qwen
-        BOLT_APPLICATION_VERSION: "0"
+        OPENROUTER_API_KEY: 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
     PortMap:
         - Protocol: http
           Port: 8080
@@ -68,8 +55,8 @@ serverlessConfig:
         CPU: 8
         MemoryMB: 32768
         MemoryMaxMB: 32768
-        DiskMB: 4096
-    Timeout: 120
+        DiskMB: 100
+    Timeout: 60
 service:
     description: Fynd AI — React frontend + FastAPI + OpenRouter
     name: fynd-ai
